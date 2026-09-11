@@ -31,6 +31,40 @@ def state():
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_both_nodes_receive_selected_ports(self):
+        nodes = m.make_nodes(54321, 54322)
+        self.assertEqual([(n['tag'], n['port']) for n in nodes],
+                         [(m.DIRECT_TAG, 54321), (m.HOME_TAG, 54322)])
+        self.assertNotEqual(nodes[0]['uuid'], nodes[1]['uuid'])
+
+    def test_random_port_skips_reserved_and_occupied(self):
+        with patch.object(m.secrets, 'randbelow', side_effect=[1, 2, 3]), \
+             patch.object(m, 'available_ports', side_effect=[RuntimeError('busy'), None]):
+            self.assertEqual(m.random_port({20001}), 20003)
+
+    def test_custom_port_reprompts_on_collision(self):
+        with patch.object(m, 'random_port', return_value=23456), \
+             patch.object(m, 'ask', side_effect=['54321', '54322']), \
+             patch.object(m, 'available_ports'):
+            self.assertEqual(m.ask_port('port', {54321}), 54322)
+
+    def test_different_residential_exits_allow_failure_test(self):
+        s = state()
+        s.pop('rotating')
+        @contextlib.contextmanager
+        def fake_client(_):
+            yield ['server', 'home']
+        exits = ['8.8.8.8', '9.9.9.9', '1.1.1.1', '8.8.8.8',
+                 RuntimeError('upstream unavailable'), '8.8.8.8', '9.9.9.10']
+        with patch.object(m, 'wait_panel'), \
+             patch.object(m, 'get_template', return_value=m.template(s)), \
+             patch.object(m, 'client', fake_client), patch.object(m, 'run'), \
+             patch.object(m, 'fetch_ip', side_effect=exits), \
+             patch.object(m, 'restart'), patch.object(m, 'update_template'), \
+             patch.object(m, 'save') as save:
+            m.selftest(s, failure=True)
+        self.assertTrue(save.call_args.args[1]['failure_test_passed'])
+
     def test_detected_server_ip_does_not_prompt(self):
         with patch.object(m, 'fetch_ip', return_value='8.8.4.4') as detect, \
              patch.object(m, 'ask') as ask:

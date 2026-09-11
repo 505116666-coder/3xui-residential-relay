@@ -183,6 +183,38 @@ def port(value):
     return n
 
 
+def random_port(excluded):
+    for _ in range(500):
+        candidate = 20000 + secrets.randbelow(40000)
+        if candidate in excluded or candidate in (443, 8443):
+            continue
+        try:
+            available_ports([candidate])
+        except RuntimeError:
+            continue
+        return candidate
+    raise RuntimeError('无法找到空闲端口，请检查服务器端口占用。')
+
+
+def ask_port(label, excluded):
+    default = random_port(excluded)
+    while True:
+        try:
+            selected = port(ask(label, default))
+            if selected in excluded:
+                raise ValueError('端口与其他服务重复。')
+            available_ports([selected])
+            return selected
+        except (ValueError, RuntimeError) as exc:
+            say(f'{exc} 请重新填写端口。')
+
+
+def make_nodes(dp, hp):
+    return [{'tag': tag, 'name': name, 'port': p, 'uuid': str(uuid.uuid4()),
+             'subid': secrets.token_hex(8), 'sid': secrets.token_hex(8)}
+            for tag, name, p in [(DIRECT_TAG, '服务器直连', dp), (HOME_TAG, '住宅IP中转', hp)]]
+
+
 def download(url, dest, digest=None):
     if dest.exists() and digest and hashlib.sha256(dest.read_bytes()).hexdigest() == digest:
         return
@@ -502,10 +534,7 @@ def selftest(s, tls=False, failure=False):
         if home_ip == direct:
             raise RuntimeError('住宅节点出口与服务器出口相同，停止验收。')
         if home_ip != upstream:
-            if s['rotating']:
-                say('住宅出口发生轮换：记录本次出口；不能用两次 IP 相等判断轮换型代理。')
-            else:
-                raise RuntimeError('住宅节点出口与 SOCKS5 实测出口不同；若供应商使用轮换 IP，请选择轮换模式后重新部署。')
+            say('两次住宅出口 IP 不同，记录检测结果；不以两次 IP 相同作为验收条件。')
         if failure:
             say('正在模拟住宅上游连接失败，确认住宅入口失败且服务器入口仍可用……')
             # Reserve a bound, NON-listening socket. No firewall changes, DNS changes, or real credentials are modified.
@@ -820,31 +849,23 @@ def main():
                 raise ValueError('SOCKS5 用户名和密码必须为 1–255 字节。')
         if ':' in su:
             raise ValueError('当前脚本的 curl 检测不支持含冒号的用户名。')
-        rotating = ask('住宅 IP 是否每次连接轮换？固定/粘性填 n，轮换填 y', 'n').lower()
-        if rotating not in ('n', 'y'):
-            raise ValueError('请输入 y 或 n。')
         email = ask('证书 ACME 账户邮箱')
         if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email):
             raise ValueError('邮箱格式无效。')
         target = ask('REALITY 目标域名（不需要你拥有）', 'dl.google.com').lower()
         if not re.fullmatch(r'(?=.{1,253}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?', target) or '.' not in target:
             raise ValueError('目标必须是域名，不带协议、路径或端口。')
-        dp = port(ask('服务器直连节点端口', '443'))
-        hp = port(ask('住宅中转节点端口', '8443'))
-        pp = port(ask('面板 HTTPS 端口', 20000 + secrets.randbelow(30000)))
-        ap = 55000 + secrets.randbelow(9000)
-        bp = 55000 + secrets.randbelow(9000)
-        if len({dp, hp, pp, ap, bp, 80}) != 6:
-            raise ValueError('端口重复，请重新运行。')
+        dp = ask_port('服务器直连节点端口（回车使用随机默认值）', {80})
+        hp = ask_port('住宅中转节点端口（回车使用随机默认值）', {80, dp})
+        pp = ask_port('面板 HTTPS 端口', {80, dp, hp})
+        ap = random_port({80, dp, hp, pp})
+        bp = random_port({80, dp, hp, pp, ap})
         s = {'managed_by': '3xui-dual-v1', 'version': VERSION, 'arch': arch, 'ip': ip,
              'socks_ip': socks_ip, 'socks_port': sp, 'socks_user': su, 'socks_password': pw,
-             'rotating': rotating == 'y', 'email': email, 'target': target,
+             'email': email, 'target': target,
              'panel_port': pp, 'api_port': ap, 'bridge_port': bp, 'username': 'admin_' + secrets.token_hex(4),
              'password': secrets.token_urlsafe(24), 'base': '/' + secrets.token_hex(12) + '/',
-             'nodes': []}
-        for tag, name, p in [(DIRECT_TAG, '服务器直连', dp), (HOME_TAG, '住宅IP中转')]:
-            s['nodes'].append({'tag': tag, 'name': name, 'port': p, 'uuid': str(uuid.uuid4()),
-                               'subid': secrets.token_hex(8), 'sid': secrets.token_hex(8)})
+             'nodes': make_nodes(dp, hp)}
         save(STATE, s)
     shutil.copyfile(Path(__file__), ROOT / 'manager.py') if Path(__file__).resolve() != ROOT / 'manager.py' else None
     say(f"请在云安全组及已有防火墙放行 TCP：80、{s['panel_port']}、" + '、'.join(str(n['port']) for n in s['nodes']))
