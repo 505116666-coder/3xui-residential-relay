@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.DS_Store
+.env
+.env.*
+state.json
+登录信息与两个节点.txt
+routing-recovery.json
+*.db
+*.db-*
+*.pem
+*.key
+*.log
+cert/
+acme/
