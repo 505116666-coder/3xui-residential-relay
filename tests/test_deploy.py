@@ -3,6 +3,8 @@ import contextlib
 import copy
 import importlib.util
 import json
+import os
+import pty
 from pathlib import Path
 import subprocess
 import tempfile
@@ -28,6 +30,24 @@ def state():
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_prompt_works_on_nonseekable_terminal(self):
+        # A real PTY reproduces SSH terminal behavior; StringIO cannot catch r+ failures.
+        real_open = open
+        for typed, expected in [('203.0.113.7\n', '203.0.113.7'), ('\n', 'default')]:
+            with self.subTest(typed=typed):
+                master, slave = pty.openpty()
+                try:
+                    slave_path = os.ttyname(slave)
+                    def open_terminal(path, mode='r', *args, **kwargs):
+                        return real_open(slave_path if path == '/dev/tty' else path,
+                                         mode, *args, **kwargs)
+                    os.write(master, typed.encode())
+                    with patch.object(m, 'open', open_terminal, create=True):
+                        self.assertEqual(m.ask('Server IPv4', 'default'), expected)
+                finally:
+                    os.close(slave)
+                    os.close(master)
+
     def test_actual_xray_26728_key_labels(self):
         self.assertEqual(m.parse_x25519('PrivateKey: secret\nPassword (PublicKey): pub\nHash32: hash\n'),
                          ('secret', 'pub'))

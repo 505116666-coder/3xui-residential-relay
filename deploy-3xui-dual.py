@@ -77,10 +77,12 @@ def ask(label, default=None, secret=False):
     if secret:
         with open('/dev/tty', 'w') as tty:
             return getpass.getpass(prompt, stream=tty)
-    with open('/dev/tty', 'r+') as tty:
-        tty.write(prompt)
-        tty.flush()
-        value = tty.readline()
+    # Buffered r+ requires a seekable stream; SSH terminals are not seekable.
+    # Keep separate read/write handles, including when stdin is a script or pipe.
+    with open('/dev/tty', 'w') as tty_out, open('/dev/tty', 'r') as tty_in:
+        tty_out.write(prompt)
+        tty_out.flush()
+        value = tty_in.readline()
         if not value:
             raise RuntimeError('终端输入已关闭。')
     return value.strip() or (str(default) if default is not None else '')
