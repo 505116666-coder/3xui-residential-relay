@@ -95,6 +95,57 @@ def public_ip(value):
     return str(p)
 
 
+def server_ip():
+    try:
+        detected = public_ip(fetch_ip(family4=True))
+    except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired):
+        say('未能自动获取服务器公网 IPv4，请手动填写。')
+        while True:
+            try:
+                return public_ip(ask('请输入服务器公网 IPv4'))
+            except ValueError:
+                say('请输入有效的公网 IPv4，例如服务器控制台显示的地址。')
+    say(f'已自动使用服务器公网 IPv4：{detected}')
+    return detected
+
+
+def socks_host(value):
+    """Validate a provider connection hostname or public IPv4, without pinning DNS."""
+    value = value.strip()
+    if not value:
+        raise ValueError('请填写代理商提供的连接域名或 IPv4。')
+    if any(c in value for c in '/:@[]\\') or any(c.isspace() for c in value):
+        raise ValueError('这里只填域名或 IPv4，不带 socks5://、端口、账号或路径；端口下一步填写。')
+    if re.fullmatch(r'[0-9.]+', value):
+        return public_ip(value)
+    if value.endswith('.'):
+        value = value[:-1]
+    try:
+        host = value.encode('idna').decode('ascii').lower()
+    except UnicodeError:
+        raise ValueError('连接域名格式无效。')
+    labels = host.split('.')
+    if len(host) > 253 or len(labels) < 2 or not all(
+            re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in labels):
+        raise ValueError('请输入有效的连接域名或公网 IPv4。')
+    return host
+
+
+def ask_socks_host():
+    while True:
+        try:
+            return socks_host(ask('请输入住宅 SOCKS5 连接地址（代理商提供的域名或 IPv4）'))
+        except ValueError as exc:
+            say(str(exc))
+
+
+def check_socks_dns(host, proxy_port):
+    try:
+        socket.getaddrinfo(host, proxy_port, socket.AF_INET, socket.SOCK_STREAM)
+    except socket.gaierror:
+        raise RuntimeError('住宅 SOCKS5 连接地址无法解析为 IPv4。请检查域名拼写及服务器 DNS；此版本要求代理域名有 A 记录。')
+
+
 def port(value):
     n = int(value)
     if not 1024 <= n <= 65535 and n != 443:
@@ -414,7 +465,7 @@ def selftest(s, tls=False, failure=False):
         server_ip = fetch_ip(proxies[0])
         home_ip = fetch_ip(proxies[1])
         upstream = fetch_ip(f"socks5h://{s['socks_ip']}:{s['socks_port']}",
-                            s['socks_user'] + ':' + s['socks_password'])
+                            s['socks_user'] + ':' + s['socks_password'], family4=True)
         direct = fetch_ip(family4=True)
         if server_ip != direct:
             raise RuntimeError('服务器节点出口与服务器直接访问出口不一致。')
@@ -543,12 +594,13 @@ WantedBy=timers.target
 
 def deploy(s):
     say('检查住宅 SOCKS5 认证和出口……')
+    check_socks_dns(s['socks_ip'], s['socks_port'])
     s['baseline_home'] = fetch_ip(f"socks5h://{s['socks_ip']}:{s['socks_port']}",
-                                s['socks_user'] + ':' + s['socks_password'])
+                                s['socks_user'] + ':' + s['socks_password'], family4=True)
     s['baseline_server'] = fetch_ip(family4=True)
     if s['baseline_home'] == s['baseline_server']:
         raise RuntimeError('SOCKS5 出口与服务器相同，停止安装。')
-    say(f"住宅代理入口：{s['socks_ip']}；实测出口：{s['baseline_home']}")
+    say(f"住宅代理连接地址：{s['socks_ip']}；实测出口 IP：{s['baseline_home']}")
     say('检查 REALITY 目标 TLS 1.3、h2 和证书……')
     ctx = ssl.create_default_context()
     ctx.minimum_version = ssl.TLSVersion.TLSv1_3
@@ -702,6 +754,8 @@ def main():
         s = json.loads(STATE.read_text())
         if s.get('managed_by') != '3xui-dual-v1' or s['arch'] != arch:
             raise RuntimeError('不属于本脚本管理的部署。')
+        # Keep the legacy state key for --resume compatibility; its value may now be a hostname.
+        s['socks_ip'] = socks_host(s['socks_ip'])
         if args.check:
             selftest(s, True, failure=False)
             run(['openssl', 'x509', '-in', CERT / 'fullchain.pem', '-noout', '-checkend', '172800'])
@@ -723,8 +777,8 @@ def main():
         run(['apt-get', 'update'], timeout=600)
         run(['apt-get', 'install', '-y', 'python3', 'curl', 'openssl', 'socat', 'tar',
              'ca-certificates', 'iproute2'], timeout=900)
-        ip = public_ip(ask('服务器公网 IPv4', fetch_ip(family4=True)))
-        socks_ip = public_ip(ask('住宅 SOCKS5 入口 IPv4（不是最终出口 IP）'))
+        ip = server_ip()
+        socks_ip = ask_socks_host()
         sp = int(ask('住宅 SOCKS5 端口'))
         if not 1 <= sp <= 65535:
             raise ValueError('SOCKS5 端口无效。')

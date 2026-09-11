@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import pty
+import socket
 from pathlib import Path
 import subprocess
 import tempfile
@@ -30,6 +31,47 @@ def state():
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_detected_server_ip_does_not_prompt(self):
+        with patch.object(m, 'fetch_ip', return_value='8.8.4.4') as detect, \
+             patch.object(m, 'ask') as ask:
+            self.assertEqual(m.server_ip(), '8.8.4.4')
+        detect.assert_called_once_with(family4=True)
+        ask.assert_not_called()
+
+    def test_failed_server_detection_allows_manual_input(self):
+        with patch.object(m, 'fetch_ip', side_effect=RuntimeError('network unavailable')), \
+             patch.object(m, 'ask', side_effect=['invalid', '8.8.4.4']) as ask:
+            self.assertEqual(m.server_ip(), '8.8.4.4')
+        self.assertEqual(ask.call_count, 2)
+
+    def test_socks_host_accepts_domains_and_ipv4(self):
+        for value, expected in [('gateway.example.com', 'gateway.example.com'),
+                                ('  NAT-US-28.example.com. ', 'nat-us-28.example.com'),
+                                ('1.1.1.1', '1.1.1.1'),
+                                ('代理.example.com', 'xn--mnq481g.example.com')]:
+            with self.subTest(value=value):
+                self.assertEqual(m.socks_host(value), expected)
+
+    def test_socks_host_rejects_combined_urls_and_injection(self):
+        for value in ['', 'socks5://gateway.example.com:1080', 'gateway.example.com:1080',
+                      'user:pass@gateway.example.com', 'gateway.example.com/path',
+                      '999.1.2.3', '10.0.0.1', 'host..example.com', '-host.example.com',
+                      'host.example.com,exec=bad', '%n.example.com', 'host\n.example.com']:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                m.socks_host(value)
+
+    def test_invalid_proxy_address_reprompts_without_ending_wizard(self):
+        with patch.object(m, 'ask', side_effect=['socks5://gateway.example.com', 'gateway.example.com']):
+            self.assertEqual(m.ask_socks_host(), 'gateway.example.com')
+
+    def test_proxy_dns_uses_ipv4_and_gives_clear_failure(self):
+        with patch.object(m.socket, 'getaddrinfo', return_value=[]) as lookup:
+            m.check_socks_dns('gateway.example.com', 1080)
+        lookup.assert_called_once_with('gateway.example.com', 1080, socket.AF_INET, socket.SOCK_STREAM)
+        with patch.object(m.socket, 'getaddrinfo', side_effect=socket.gaierror('no A record')):
+            with self.assertRaisesRegex(RuntimeError, '无法解析为 IPv4'):
+                m.check_socks_dns('gateway.example.com', 1080)
+
     def test_prompt_works_on_nonseekable_terminal(self):
         # A real PTY reproduces SSH terminal behavior; StringIO cannot catch r+ failures.
         real_open = open
