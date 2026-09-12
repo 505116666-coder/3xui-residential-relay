@@ -46,7 +46,7 @@
 在**服务器的 SSH 终端**粘贴运行，按提示填写即可：
 
 ```bash
-curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-dual-node/main/deploy-3xui-dual.sh' -o /root/deploy-3xui-dual.sh && bash /root/deploy-3xui-dual.sh
+curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main/deploy-3xui-dual.sh' -o /root/deploy-3xui-dual.sh && bash /root/deploy-3xui-dual.sh
 ```
 
 ## 装好后得到什么
@@ -63,7 +63,7 @@ curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-dual-node/main/deploy-
 安装中途失败，或者装好了不想用，都可以运行下面的命令。**会删除本脚本安装的面板、节点、账号、证书及部署资料，原链接随即失效。** 卸载后可以重新安装。
 
 ```bash
-curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-dual-node/main/uninstall-3xui-relay.sh' -o /root/uninstall-3xui-relay.sh && bash /root/uninstall-3xui-relay.sh
+curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main/uninstall-3xui-relay.sh' -o /root/uninstall-3xui-relay.sh && bash /root/uninstall-3xui-relay.sh
 ```
 
 ## 需要注意
