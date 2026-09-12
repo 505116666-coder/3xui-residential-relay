@@ -2,7 +2,7 @@
 
 **填入住宅代理信息，自动装好面板和中转节点。无需购买域名，也不用自己写路由规则。**
 
-## 使用前准备
+## 一、使用前准备
 
 ### 1. 一台 VPS 服务器
 
@@ -41,7 +41,7 @@
 
 > 准备好服务器和住宅代理信息后，复制安装命令，按提示填写即可。脚本会自动安装面板、配置中转，并输出面板登录信息和两条节点链接。
 
-## 一键安装
+## 二、一键安装
 
 在**服务器的 SSH 终端**粘贴运行，按提示填写即可：
 
@@ -49,7 +49,7 @@
 curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main/deploy-3xui-dual.sh' -o /root/deploy-3xui-dual.sh && bash /root/deploy-3xui-dual.sh
 ```
 
-## 装好后得到什么
+## 三、装好后得到什么
 
 - **面板登录信息**：打开输出的完整 HTTPS 地址，用给出的用户名和密码登录。
 - **服务器直连节点**：上网时使用你的服务器 IP。
@@ -58,7 +58,7 @@ curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main
 两条节点链接复制后，分别导入客户端测试。服务器上的自检通过后，仍要用自己的电脑或手机确认能连接。
 
 
-## 一键卸载
+## 四、一键卸载
 
 安装中途失败，或者装好了不想用，都可以运行下面的命令。**会删除本脚本安装的面板、节点、账号、证书及部署资料，原链接随即失效。** 卸载后可以重新安装。
 
@@ -66,7 +66,7 @@ curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main
 curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main/uninstall-3xui-relay.sh' -o /root/uninstall-3xui-relay.sh && bash /root/uninstall-3xui-relay.sh
 ```
 
-## 需要注意
+## 五、需要注意
 
 - 安装的是 **3X-UI v3.7.0**。提示 REALITY 目标域名时，可先回车使用默认值；不需要你拥有这个域名。
 - 住宅代理只支持 TCP 时，TCP 可以正常用；支持 UDP 且网络畅通时，UDP 也走住宅代理。住宅代理故障时，这个节点不会自动改用服务器 IP。
