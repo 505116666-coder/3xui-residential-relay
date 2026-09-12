@@ -51,6 +51,8 @@ curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main
 
 ## 三、原理阐述
 
+![服务器直连与住宅中转的流量路径对比](docs/images/residential-relay-principle.png)
+
 这个脚本会在你的 VPS 上安装 3X-UI 面板，并自动配置两条节点。3X-UI 用来管理节点，实际转发流量的是它使用的 Xray 内核。
 
 - **服务器直连节点**：你的电脑或手机 → VPS 服务器 → 目标网站，网站看到的是服务器 IP。
