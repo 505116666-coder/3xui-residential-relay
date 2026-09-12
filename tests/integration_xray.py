@@ -1,6 +1,7 @@
 """Real Xray integration. Run explicitly with XRAY_TEST_BIN; uses no real proxy credentials.
 Uses loopback TLS target, HTTP and DNS responders. No external network required.
 """
+import copy
 import importlib.util
 import json
 import os
@@ -54,7 +55,11 @@ with tempfile.TemporaryDirectory() as td:
          'socks_password':'test-password','api_port':api_port,'target':'dl.google.com', 'nodes':m.make_nodes(direct_port,home_port)}
     for n in s['nodes']:
         n['private'],n['public'] = m.parse_x25519(subprocess.check_output([BIN,'x25519'],text=True))
-    server = m.template(s)
+    extra = dict(s['nodes'][1], tag='dual-residential-extra', name='住宅二', port=free(), uuid='22222222-2222-4222-8222-222222222222')
+    extra['private'], extra['public'] = m.parse_x25519(subprocess.check_output([BIN,'x25519'],text=True))
+    second_upstream_port = free()
+    server = m.residential_extension(m.template(s), extra, {'host':'127.0.0.1','port':second_upstream_port,'username':'second-user','password':'second-pass'})
+    s['nodes'].append(extra)
     server['log'] = {'loglevel':'debug'}
     server['inbounds'] = []
     server['outbounds'][0]['settings'] = {'redirect':f'127.0.0.1:{http.server_port}', 'finalRules':[{'action':'allow'}]}
@@ -66,11 +71,14 @@ with tempfile.TemporaryDirectory() as td:
     upstream = {'inbounds':[{'listen':'127.0.0.1','port':upstream_port,'protocol':'socks','settings':{'auth':'password','accounts':[{'user':s['socks_user'],'pass':s['socks_password']}],'udp':True,'ip':'127.0.0.1'}}],
        'outbounds':[{'tag':'tcp','protocol':'freedom','settings':{'redirect':f'127.0.0.1:{http.server_port}', 'finalRules':[{'action':'allow'}]}}, {'tag':'udp','protocol':'freedom','settings':{'redirect':f'127.0.0.1:{dns.getsockname()[1]}', 'finalRules':[{'action':'allow'}]}}],
        'routing':{'rules':[{'type':'field','network':'udp','outboundTag':'udp'}]}}
+    second_upstream=copy.deepcopy(upstream)
+    second_upstream['inbounds'][0]['port']=second_upstream_port
+    second_upstream['inbounds'][0]['settings']['accounts']=[{'user':'second-user','pass':'second-pass'}]
     processes=[]
     env = dict(os.environ,XRAY_LOCATION_ASSET=str(BIN.parent))
     log = (root/'xray.log').open('w')
     try:
-        for name,cfg in [('upstream',upstream),('server',server)]:
+        for name,cfg in [('upstream',upstream),('second-upstream',second_upstream),('server',server)]:
             path=root/(name+'.json');path.write_text(json.dumps(cfg))
             subprocess.run([BIN,'run','-test','-c',path],env=env,check=True,stdout=log,stderr=log)
             processes.append(subprocess.Popen([BIN,'run','-c',path],env=env,stdout=log,stderr=log))
@@ -86,6 +94,15 @@ with tempfile.TemporaryDirectory() as td:
                 print('TCP via authenticated SOCKS:',m.fetch_ip(proxies[1]))
                 assert m.udp_probe(proxies[1]), 'UDP through REALITY and authenticated SOCKS failed'
                 print('UDP via REALITY -> authenticated SOCKS -> local DNS: PASS')
+                print('Added residential node TCP:',m.fetch_ip(proxies[2]))
+                assert m.udp_probe(proxies[2]), 'Added residential UDP failed'
+                processes[1].terminate();processes[1].wait()
+                assert not m.udp_probe(proxies[2]), 'Added residential UDP fell back'
+                try:m.fetch_ip(proxies[2])
+                except RuntimeError:pass
+                else:raise AssertionError('Added residential TCP fell back')
+                print('Added upstream outage leaves original residential working:',m.fetch_ip(proxies[1]))
+                print('Added upstream outage leaves direct working:',m.fetch_ip(proxies[0]))
                 processes[0].terminate();processes[0].wait()
                 assert not m.udp_probe(proxies[1]), 'UDP escaped to direct after upstream outage'
                 try: m.fetch_ip(proxies[1])

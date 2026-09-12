@@ -3,7 +3,7 @@
 set -euo pipefail
 umask 077
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  echo '用法：bash deploy-3xui-dual.sh [--resume | --check]'
+  echo '用法：bash deploy-3xui-dual.sh [--resume | --check | --results | --copy [序号] | --add-residential | --rollback-add | --migrate | --rollback-migration]'
   echo '仅适用于全新 Ubuntu 22.04+ / Debian 12+ 的 systemd 服务器。'
   exit 0
 fi
@@ -575,15 +575,19 @@ def selftest(s, tls=False, failure=False):
     return result
 
 
+def node_link(s, n):
+    query = urllib.parse.urlencode({'encryption': 'none', 'security': 'reality',
+        'sni': s['target'], 'fp': 'chrome', 'pbk': n['public'], 'sid': n['sid'],
+        'type': 'tcp', 'flow': 'xtls-rprx-vision', 'spx': '/'})
+    return f"vless://{n['uuid']}@{s['ip']}:{n['port']}?{query}#{urllib.parse.quote(n['name'])}"
+
+
 def credentials(s):
     lines = ['3X-UI 一键中转住宅 IP · Didushan', f'面板版本：{VERSION}', f"面板：https://{s['ip']}:{s['panel_port']}{s['base']}",
              f"用户名：{s['username']}", f"密码：{s['password']}", '',
              '以下链接包含节点凭据，请勿公开：']
-    for n in s['nodes']:
-        query = urllib.parse.urlencode({'encryption': 'none', 'security': 'reality',
-            'sni': s['target'], 'fp': 'chrome', 'pbk': n['public'], 'sid': n['sid'],
-            'type': 'tcp', 'flow': 'xtls-rprx-vision', 'spx': '/'})
-        lines += ['', n['name'], f"vless://{n['uuid']}@{s['ip']}:{n['port']}?{query}#{urllib.parse.quote(n['name'])}"]
+    for n in s['nodes'] + [entry['node'] for entry in s.get('additional_residential', [])]:
+        lines += ['', n['name'], node_link(s, n)]
     lines += ['', '复制节点链接后，导入客户端，分别测试服务器和住宅出口。',
               '住宅代理不通时不会自动换成服务器 IP；UDP 能否使用取决于代理商和网络。']
     return '\n'.join(lines) + '\n'
@@ -832,7 +836,8 @@ def copy_values(s):
     address = f"https://{s['ip']}:{s['panel_port']}{s['base']}"
     return [('服务器直连节点', links[0]), ('住宅中转节点', links[1]),
             ('全部面板信息', f"面板：{address}\n用户名：{s['username']}\n密码：{s['password']}"),
-            ('面板地址', address), ('用户名', s['username']), ('密码', s['password'])]
+            ('面板地址', address), ('用户名', s['username']), ('密码', s['password'])] + [
+            (entry['node']['name'], node_link(s, entry['node'])) for entry in s.get('additional_residential', [])]
 
 
 def copy_result(s, choice):
@@ -841,9 +846,11 @@ def copy_result(s, choice):
         say('\n'.join(f'{i}. {v[0]}' for i,v in enumerate(values,1)))
         selected = ask('输入要复制的序号，直接回车退出', '0')
         if selected == '0': return
-        if selected not in ('1','2','3','4','5','6'):
-            say('请输入 1 到 6。'); return
+        if not selected.isdigit():
+            say(f'请输入 1 到 {len(values)}。'); return
         choice = int(selected)
+    if not 1 <= choice <= len(values):
+        say(f'请输入 1 到 {len(values)}。'); return
     if not sys.stdout.isatty():
         say(values[choice-1][1]); return
     value = base64.b64encode(values[choice-1][1].encode()).decode()
@@ -1015,17 +1022,211 @@ def rollback_migration(s):
     say('已恢复迁移前的路由和入站配置。')
 
 
+def residential_extension(original, node, proxy):
+    """Preserve existing configuration; place the exact new route before custom rules."""
+    validate_routes(original)
+    value = copy.deepcopy(original)
+    tag = node['tag']
+    outbound_tag = tag + '-out'
+    if any(o.get('tag') == outbound_tag for o in value['outbounds']) or any(
+            tag in rule.get('inboundTag', []) for rule in value['routing']['rules']):
+        raise RuntimeError('新增标签冲突，请重试。')
+    value['outbounds'].append({'tag': outbound_tag, 'protocol': 'socks', 'settings': {'servers': [{
+        'address': proxy['host'], 'port': proxy['port'],
+        'users': [{'user': proxy['username'], 'pass': proxy['password']}]}]}})
+    value['routing']['rules'].insert(4, {'type': 'field', 'inboundTag': [tag],
+                                        'network': 'tcp,udp', 'outboundTag': outbound_tag})
+    return value
+
+
+def added_node_state(s, node):
+    value = copy.deepcopy(s)
+    value['nodes'] = [node]
+    value['additional_residential'] = []
+    return value
+
+
+def rollback_add(s):
+    journal = ROOT / 'pending-add.json'
+    if not journal.exists():
+        say('没有待恢复的住宅添加操作。')
+        return
+    record = json.loads(journal.read_text())
+    tag = record['node']['tag']
+    # An atomic state write is the commit point. Never undo a committed addition.
+    current_state = json.loads(STATE.read_text())
+    if any(e['node']['tag'] == tag for e in current_state.get('additional_residential', [])):
+        journal.unlink()
+        say('上次添加已完成，可用 --results 查看节点。')
+        return
+    api = wait_panel(s, True)
+    current = get_template(api)
+    without_rule = copy.deepcopy(record['desired'])
+    without_rule['routing']['rules'] = [r for r in without_rule['routing']['rules']
+                                       if tag not in r.get('inboundTag', [])]
+    if current not in (record['original'], record['desired'], without_rule):
+        raise RuntimeError('添加中断后配置又被修改，停止自动恢复以保留后续修改。')
+    matches = [e for e in api.request('panel/api/inbounds/list') if e.get('tag') == tag]
+    for entry in matches:
+        clients = json.loads(entry['settings']).get('clients', [])
+        if entry['port'] != record['node']['port'] or len(clients) != 1 or clients[0].get('id') != record['node']['uuid']:
+            raise RuntimeError('新增入站已被修改，停止自动删除。')
+    for entry in matches:
+        api.request('panel/api/inbounds/del/' + str(entry['id']), {})
+    update_template(api, record['original'])
+    restart(s, True)
+    if record.get('ufw_added'):
+        p = record['node']['port']
+        status = run(['ufw', 'status'], check=False).stdout
+        if re.search(r'^' + str(p) + r'/tcp\s+.*# Didushan-3xui-relay\s*$', status, re.M):
+            run(['ufw', '--force', 'delete', 'allow', str(p) + '/tcp'])
+        manifest = ROOT / 'ufw-added.txt'
+        if manifest.exists():
+            save(manifest, ''.join(line + '\n' for line in manifest.read_text().splitlines() if line != str(p)))
+    journal.unlink()
+    say('已撤回本次新增，原有节点配置已恢复。')
+
+
+def apply_residential_add(s, node, proxy, original, api):
+    journal = ROOT / 'pending-add.json'
+    if journal.exists():
+        raise RuntimeError('上次添加未结束，请先运行 --rollback-add。')
+    desired = residential_extension(original, node, proxy)
+    record = {'node': node, 'original': original, 'desired': desired, 'ufw_added': False}
+    # Persist recovery before any panel mutation; survives a disconnected SSH session.
+    save(journal, record)
+    try:
+        disabled = inbound(s, node)
+        disabled['enable'] = False
+        api.request('panel/api/inbounds/add', disabled)
+        entries = [e for e in api.request('panel/api/inbounds/list') if e.get('tag') == node['tag']]
+        if len(entries) != 1:
+            raise RuntimeError('新增入站未正确保存。')
+        entry = entries[0]
+        if entry['port'] != node['port'] or json.loads(entry['settings'])['clients'][0]['id'] != node['uuid']:
+            raise RuntimeError('新增入站参数不一致。')
+        update_template(api, desired)
+        if get_template(api) != desired:
+            raise RuntimeError('新增住宅路由未正确保存。')
+        # Load the route before enabling the inlet, so it can never use default direct.
+        api = restart(s, True)
+        entry['enable'] = True
+        api.request('panel/api/inbounds/update/' + str(entry['id']), entry)
+        probe_state = added_node_state(s, node)
+        api = restart(probe_state, True)
+        run([xray_bin(s), 'run', '-test', '-c', APP / 'bin/config.json'], cwd=APP / 'bin')
+        if get_template(api) != desired:
+            raise RuntimeError('应用后路由与预期不一致。')
+        with client(probe_state) as proxies:
+            exit_ip = fetch_ip(proxies[0])
+            if exit_ip == fetch_ip(family4=True):
+                raise RuntimeError('新增住宅节点出口与服务器相同。')
+            udp_ok = udp_probe(proxies[0])
+        # Open only this new TCP listener; UDP is carried inside the VLESS stream.
+        if shutil.which('ufw') and 'Status: active' in run(['ufw', 'status'], check=False).stdout:
+            status = run(['ufw', 'status'], check=False).stdout
+            if not re.search(r'^' + str(node['port']) + r'/tcp(?:\s|$)', status, re.M):
+                record['ufw_added'] = True
+                save(journal, record)
+                manifest = ROOT / 'ufw-added.txt'
+                recorded = manifest.read_text() if manifest.exists() else ''
+                if str(node['port']) not in recorded.splitlines():
+                    save(manifest, recorded + str(node['port']) + '\n')
+                run(['ufw', 'allow', str(node['port']) + '/tcp', 'comment', 'Didushan-3xui-relay'])
+        updated = copy.deepcopy(s)
+        updated.setdefault('additional_residential', []).append({
+            'node': node, 'proxy': proxy, 'exit_ip': exit_ip, 'udp_test_passed': udp_ok})
+        save(ROOT / 'manager.py', Path(__file__).read_text())
+        save(STATE, updated)
+    except BaseException:
+        rollback_add(s)
+        raise
+    s.clear()
+    s.update(updated)
+    journal.unlink()
+    write_results(s)
+    say('住宅 IP 添加成功。')
+    say(f"节点：{node['name']}；端口：{node['port']}；实测出口：{exit_ip}")
+    say('UDP 实测通过。' if udp_ok else 'UDP 暂未测通；TCP 已通过，UDP 仍绑定住宅代理。')
+    say(node_link(s, node))
+    say(f"请在云安全组或其他防火墙放行 TCP {node['port']}，导入客户端后测试。")
+    completion(s)
+
+
+def inbound_snapshot(entries):
+    # Traffic counters change while the wizard is open; compare configuration only.
+    keys = ('id', 'tag', 'port', 'enable', 'listen', 'protocol', 'settings', 'streamSettings', 'sniffing', 'remark')
+    return sorted([{k: e.get(k) for k in keys} for e in entries], key=lambda e: e['id'])
+
+
+def add_residential(s):
+    if not s.get('complete'):
+        raise RuntimeError('请先完成安装，再添加住宅 IP。')
+    if (ROOT / 'pending-add.json').exists():
+        raise RuntimeError('上次添加未结束，请先运行 --rollback-add，再用 --results 查看结果。')
+    migration = ROOT / 'migration-backup.json'
+    if migration.exists() and json.loads(migration.read_text()).get('pending'):
+        raise RuntimeError('上次迁移未完成，请先运行 --rollback-migration。')
+    api = wait_panel(s, True)
+    original = get_template(api)
+    validate_routes(original)
+    entries = api.request('panel/api/inbounds/list')
+    if shutil.which('firewall-cmd') and run(['firewall-cmd', '--state'], check=False).returncode == 0:
+        raise RuntimeError('检测到 firewalld，当前新增功能尚不支持自动配置该防火墙。')
+    name = ask('新住宅节点名称', '住宅中转-' + str(len(s.get('additional_residential', [])) + 2))
+    if not name or len(name) > 64 or any(ord(c) < 32 for c in name):
+        raise ValueError('节点名称须为 1–64 个可显示字符。')
+    host = ask_socks_host()
+    while True:
+        try:
+            proxy_port = int(ask('住宅 SOCKS5 端口'))
+            if not 1 <= proxy_port <= 65535:
+                raise ValueError()
+            break
+        except ValueError:
+            say('请输入 1–65535 的端口。')
+    user = ask('住宅 SOCKS5 用户名')
+    password = ask('住宅 SOCKS5 密码（隐藏输入）', secret=True)
+    for value in (user, password):
+        curl_quote(value)
+        if not value or len(value.encode()) > 255:
+            raise ValueError('SOCKS5 用户名和密码必须为 1–255 字节。')
+    if ':' in user:
+        raise ValueError('当前检测工具不支持含冒号的用户名。')
+    proxy = {'host': host, 'port': proxy_port, 'username': user, 'password': password}
+    say('检查新住宅代理的认证和出口……')
+    check_socks_dns(host, proxy_port)
+    upstream = fetch_ip(f'socks5h://{host}:{proxy_port}', user + ':' + password, family4=True)
+    if upstream == fetch_ip(family4=True):
+        raise RuntimeError('新住宅代理出口与服务器相同，未添加。')
+    excluded = {80, s['panel_port'], s['api_port']} | {int(e['port']) for e in entries}
+    selected = ask_port('新节点端口（回车使用随机端口）', excluded)
+    tag = 'dual-residential-' + secrets.token_hex(6)
+    if any(e.get('tag') == tag for e in entries):
+        raise RuntimeError('入站标签冲突，请重试。')
+    node = {'tag': tag, 'name': name, 'port': selected, 'uuid': str(uuid.uuid4()),
+            'subid': secrets.token_hex(8), 'sid': secrets.token_hex(8)}
+    node['private'], node['public'] = parse_x25519(run([xray_bin(s), 'x25519']).stdout)
+    # Recheck after interactive input, before capturing the recovery baseline.
+    if get_template(api) != original or inbound_snapshot(api.request('panel/api/inbounds/list')) != inbound_snapshot(entries):
+        raise RuntimeError('填写期间面板配置发生变化，请重试添加。')
+    say('正在添加独立节点并绑定住宅路由，应用配置会短暂重启代理服务……')
+    apply_residential_add(s, node, proxy, original, api)
+
+
 def main():
     parser = argparse.ArgumentParser(description='3X-UI 一键中转住宅 IP')
     parser.add_argument('--resume', action='store_true', help='仅恢复本脚本未完成的部署；重新应用其配置')
     parser.add_argument('--check', action='store_true', help='只检查本脚本部署；不注入故障')
     parser.add_argument('--migrate', action='store_true', help='升级本脚本已完成的部署，保留面板及节点凭据')
     parser.add_argument('--rollback-migration', action='store_true', help='恢复中断迁移的配置备份')
+    parser.add_argument('--add-residential', action='store_true', help='添加一个住宅代理及独立中转节点')
+    parser.add_argument('--rollback-add', action='store_true', help='撤回中断的住宅添加操作')
     parser.add_argument('--results', action='store_true', help='重新显示登录信息和节点，不改配置')
-    parser.add_argument('--copy', type=int, nargs='?', const=0, choices=range(7), help='复制菜单；可直接指定 1-6')
+    parser.add_argument('--copy', type=int, nargs='?', const=0, help='复制菜单；可直接指定菜单序号')
     args = parser.parse_args()
     banner()
-    if sum((args.resume, args.check, args.migrate, args.rollback_migration, args.results, args.copy is not None)) > 1:
+    if sum((args.resume, args.check, args.migrate, args.rollback_migration, args.results, args.add_residential, args.rollback_add, args.copy is not None)) > 1:
         parser.error('一次只能选择一种操作。')
     os.umask(0o077)
     arch = check_os()
@@ -1043,10 +1244,18 @@ def main():
     owned_empty = (ROOT / 'owner').is_file() and (ROOT / 'owner').read_text() == '3xui-dual-v1'
     if args.resume and not STATE.exists() and owned_empty and not APP.exists() and not Path('/etc/x-ui').exists():
         args.resume = False  # Earlier interruption during dependency installation / input wizard.
-    if args.resume or args.check or args.migrate or args.rollback_migration or args.results or args.copy is not None:
+    if args.resume or args.check or args.migrate or args.rollback_migration or args.results or args.add_residential or args.rollback_add or args.copy is not None:
         s = json.loads(STATE.read_text())
         if s.get('managed_by') != '3xui-dual-v1' or s['arch'] != arch:
             raise RuntimeError('不属于本脚本管理的部署。')
+        if args.rollback_add:
+            rollback_add(s)
+            return
+        if args.add_residential:
+            add_residential(s)
+            return
+        if (ROOT / 'pending-add.json').exists() and not (args.results or args.copy is not None):
+            raise RuntimeError('有未结束的住宅添加操作，请先运行 --rollback-add。')
         # Keep the legacy state key for --resume compatibility; its value may now be a hostname.
         s['socks_ip'] = socks_host(s['socks_ip'])
         if args.results or args.copy is not None:
@@ -1132,11 +1341,14 @@ if __name__ == '__main__':
     try:
         main()
     except KeyboardInterrupt:
-        say('\n已中断。部署未完成时服务已停止。')
+        say('\n已中断。添加操作会尝试自动撤回；如未完成恢复，请用 --rollback-add。')
         sys.exit(130)
     except Exception as exc:
         say(f'\n未完成：{exc}')
-        say('修复原因后可运行原脚本 --resume；不要删除已有数据库来强行重装。')
+        if '--add-residential' in sys.argv or '--rollback-add' in sys.argv:
+            say('若提示添加中断，先用 --rollback-add 恢复；否则修复原因后重试 --add-residential。')
+        else:
+            say('修复原因后请按错误提示选择操作；安装中途失败可用 --resume。')
         sys.exit(1)
 
 PYTHON_3XUI_DUAL_EOF

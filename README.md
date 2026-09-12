@@ -71,7 +71,22 @@ curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main
 两条节点链接复制后，分别导入客户端测试。服务器上的自检通过后，仍要用自己的电脑或手机确认能连接。
 
 
-## 五、一键卸载
+## 五、一键添加更多住宅 IP
+
+已经用本脚本安装成功后，每增加一个住宅代理，在服务器 SSH 中运行：
+
+```bash
+curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main/deploy-3xui-dual.sh' -o /root/deploy-3xui-dual.sh && bash /root/deploy-3xui-dual.sh --add-residential
+```
+
+按提示填写新住宅代理的**地址、端口、用户名和密码**。节点名称可自定义，节点端口默认随机，也可自己指定。脚本会自动创建独立入站、住宅出站和对应路由，测试后给出新节点链接，无需进入面板配置。
+
+- 原有节点、住宅代理和面板账号保留；每次运行添加一个，可重复添加。
+- 应用配置会短暂重启代理服务，已有连接可能需要重连。
+- 如果有云安全组或其他防火墙，按提示放行新节点的 **TCP 端口**，再导入客户端测试。
+- 添加失败会尝试自动撤回本次改动；中断后提示需要恢复时，参见[维护与排查](docs/维护说明.md)。
+
+## 六、一键卸载
 
 安装中途失败，或者装好了不想用，都可以运行下面的命令。**会删除本脚本安装的面板、节点、账号、证书及部署资料，原链接随即失效。** 卸载后可以重新安装。
 
@@ -79,7 +94,7 @@ curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main
 curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main/uninstall-3xui-relay.sh' -o /root/uninstall-3xui-relay.sh && bash /root/uninstall-3xui-relay.sh
 ```
 
-## 六、需要注意
+## 七、需要注意
 
 - 安装的是 **3X-UI v3.7.0**。提示 REALITY 目标域名时，可先回车使用默认值；不需要你拥有这个域名。
 - 住宅代理只支持 TCP 时，TCP 可以正常用；支持 UDP 且网络畅通时，UDP 也走住宅代理。住宅代理故障时，这个节点不会自动改用服务器 IP。
