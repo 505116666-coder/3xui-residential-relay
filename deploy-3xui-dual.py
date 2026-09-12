@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Fresh Ubuntu/Debian deployment; embedded in deploy-3xui-dual.sh."""
 import argparse
+import base64
+import html
 import contextlib
 import copy
 import fcntl
@@ -545,7 +547,7 @@ def selftest(s, tls=False, failure=False):
 
 
 def credentials(s):
-    lines = [f'3x-ui {VERSION}', f"面板：https://{s['ip']}:{s['panel_port']}{s['base']}",
+    lines = ['3X-UI 一键中转住宅 IP · Didushan', f'面板版本：{VERSION}', f"面板：https://{s['ip']}:{s['panel_port']}{s['base']}",
              f"用户名：{s['username']}", f"密码：{s['password']}", '',
              '以下链接包含节点凭据，请勿公开：']
     for n in s['nodes']:
@@ -553,13 +555,8 @@ def credentials(s):
             'sni': s['target'], 'fp': 'chrome', 'pbk': n['public'], 'sid': n['sid'],
             'type': 'tcp', 'flow': 'xtls-rprx-vision', 'spx': '/'})
         lines += ['', n['name'], f"vless://{n['uuid']}@{s['ip']}:{n['port']}?{query}#{urllib.parse.quote(n['name'])}"]
-    lines += ['', '住宅 TCP/UDP 均固定走住宅出站；UDP 实际可用性取决于供应商与网络，不回退到服务器出口。',
-              '客户端请关闭 Mux；住宅节点使用远端 DNS/DoH，避免本地 DNS 和分流绕过。',
-              '还需从你的电脑/手机导入测试；服务器回环测试不证明云防火墙已放行。',
-              '检查：python3 /root/3xui-dual/manager.py --check',
-              '证书续期：systemctl status 3xui-dual-renew.timer',
-              '续期日志：journalctl -u 3xui-dual-renew.service --no-pager -n 60',
-              '敏感文件及数据库均只应由 root 读取。']
+    lines += ['', '复制节点链接后，导入客户端，分别测试服务器和住宅出口。',
+              '住宅代理不通时不会自动换成服务器 IP；UDP 能否使用取决于代理商和网络。']
     return '\n'.join(lines) + '\n'
 
 
@@ -648,7 +645,14 @@ def deploy(s):
         raise RuntimeError('检测到 firewalld，请先手动放行所列端口，再处理防火墙适配；脚本不会替换防火墙。')
     if shutil.which('ufw') and 'Status: active' in run(['ufw', 'status'], check=False).stdout:
         for p in [80, s['panel_port']] + [n['port'] for n in s['nodes']]:
-            run(['ufw', 'allow', str(p) + '/tcp'])
+            status = run(['ufw', 'status'], check=False).stdout
+            if re.search(r'^' + str(p) + r'/tcp(?:\s|$)', status, re.M):
+                continue  # Existing rules belong to the user, including restrictive rules.
+            manifest = ROOT / 'ufw-added.txt'
+            recorded = manifest.read_text() if manifest.exists() else ''
+            if str(p) not in recorded.splitlines():
+                save(manifest, recorded + str(p) + '\n')
+            run(['ufw', 'allow', str(p) + '/tcp', 'comment', 'Didushan-3xui-relay'])
     archive = ROOT / ('x-ui-linux-' + s['arch'] + '.tar.gz')
     say(f'安装固定版本 {VERSION}，验证官方发行包 SHA-256……')
     download(f'https://github.com/MHSanaei/3x-ui/releases/download/{VERSION}/{archive.name}',
@@ -735,45 +739,102 @@ WantedBy=multi-user.target
     s['complete'] = True
     save(STATE, s)
     save(ROOT / '登录信息与两个节点.txt', credentials(s))
-    say('\n部署及服务器本机协议测试通过。面板证书已验证，续期任务已启用。')
+    say('\n安装完成，服务器自检通过。面板已开启 HTTPS，并设置自动续期。')
     say(credentials(s))
     say(f'结果已保存：{ROOT}/登录信息与两个节点.txt')
     completion(s)
+    write_results(s)
 
 
 COUNTER_URL = 'https://didushan-script-counter.cooperk717.chatgpt.site/api/runs'
 
 
+def terminal_link(label, url):
+    if sys.stdout.isatty() and os.environ.get('TERM') != 'dumb':
+        return f'\033]8;;{url}\033\\{label}\033]8;;\033\\'
+    return f'{label}：{url}'
+
+
 def banner():
-    art = '''DDDD   III  DDDD   U   U  SSSS  H   H   AAA   N   N
-D   D   I   D   D  U   U S      H   H  A   A  NN  N
-D   D   I   D   D  U   U  SSS   HHHHH  AAAAA  N N N
-D   D   I   D   D  U   U     S  H   H  A   A  N  NN
-DDDD   III  DDDD    UUU  SSSS   H   H  A   A  N   N'''
-    say(art if shutil.get_terminal_size((80, 24)).columns >= 55 else '=== Didushan ===')
-    say('Didushan | 3x-ui 双节点部署\n')
+    # Full-width text stays readable without relying on the terminal's font size.
+    say('\n' + '━' * 36)
+    say('       Ｄｉｄｕｓｈａｎ')
+    say('     3X-UI 一键中转住宅 IP')
+    say('━' * 36 + '\n')
 
 
 def completion(s):
-    # One id per completed installation/migration; retrying the POST is idempotent.
     s.setdefault('counter_event', str(uuid.uuid4()))
     save(STATE, s)
+    request = json.dumps({'event_id': s['counter_event']})
     try:
-        conn = http.client.HTTPSConnection(urllib.parse.urlsplit(COUNTER_URL).hostname, timeout=5)
-        try:
-            conn.request('POST', '/api/runs', body=json.dumps({'event_id': s['counter_event']}),
-                         headers={'Content-Type': 'application/json'})
-            response = conn.getresponse()
-            data = json.loads(response.read(4096))
-            if response.status != 200 or type(data.get('count')) is not int or data['count'] < 0:
-                raise ValueError('invalid count')
-            say(f"脚本全局累计成功运行次数：{data['count']}（统计启用后）")
-        finally:
-            conn.close()
-    except (OSError, ValueError, http.client.HTTPException):
-        say('脚本全局累计成功运行次数：统计暂不可用，不影响本次部署。')
-    say('作者 YouTube 频道：https://www.youtube.com/@Didushan')
-    say('电报联系方式：https://t.me/didushan9')
+        response = subprocess.run(['curl', '-4', '--silent', '--show-error', '--fail',
+            '--proto', '=https', '--connect-timeout', '4', '--max-time', '8',
+            '--retry', '1', '--retry-delay', '1', '-A', 'Didushan-Relay/1',
+            '-H', 'Content-Type: application/json', '--data-binary', '@-', COUNTER_URL],
+            input=request, text=True, capture_output=True, timeout=22)
+        if response.returncode:
+            reasons = {6:'统计网址解析失败',7:'无法连接统计服务',22:'统计服务拒绝请求',28:'连接超时',35:'HTTPS 握手失败',60:'证书校验失败'}
+            raise ValueError(reasons.get(response.returncode, f'网络请求失败（curl {response.returncode}）'))
+        data = json.loads(response.stdout)
+        if not isinstance(data, dict) or type(data.get('count')) is not int or data['count'] < 0:
+            raise ValueError('统计服务返回格式不正确')
+        s['last_global_count'] = data['count']
+        s.pop('counter_error', None)
+        say(f"累计成功运行：{data['count']} 次（统计启用后）")
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        reason = str(exc) if isinstance(exc, ValueError) and not isinstance(exc, json.JSONDecodeError) else '统计请求未完成'
+        s['counter_error'] = reason
+        save(ROOT / 'counter-status.json', {'error': reason, 'time': time.strftime('%Y-%m-%d %H:%M:%S')})
+        say(f'本次安装已完成；次数暂未同步：{reason}。')
+        say('稍后重试：python3 /root/3xui-dual/manager.py --stats')
+    save(STATE, s)
+    say(terminal_link('作者 YouTube 频道', 'https://www.youtube.com/@Didushan') + '  |  ' + terminal_link('电报联系', 'https://t.me/didushan9'))
+
+
+def copy_values(s):
+    links = [line for line in credentials(s).splitlines() if line.startswith('vless://')]
+    address = f"https://{s['ip']}:{s['panel_port']}{s['base']}"
+    return [('服务器直连节点', links[0]), ('住宅中转节点', links[1]),
+            ('全部面板信息', f"面板：{address}\n用户名：{s['username']}\n密码：{s['password']}"),
+            ('面板地址', address), ('用户名', s['username']), ('密码', s['password'])]
+
+
+def copy_result(s, choice):
+    values = copy_values(s)
+    if choice == 0:
+        say('\n'.join(f'{i}. {v[0]}' for i,v in enumerate(values,1)))
+        selected = ask('输入要复制的序号，直接回车退出', '0')
+        if selected == '0': return
+        if selected not in ('1','2','3','4','5','6'):
+            say('请输入 1 到 6。'); return
+        choice = int(selected)
+    if not sys.stdout.isatty():
+        say(values[choice-1][1]); return
+    value = base64.b64encode(values[choice-1][1].encode()).decode()
+    sys.stdout.write('\033]52;c;' + value + '\a');sys.stdout.flush()
+    say('已向终端发送复制请求，请粘贴检查。若终端不支持，请使用结果网页中的复制按钮。')
+
+
+def write_results(s):
+    values = copy_values(s)
+    cards = []
+    for i,(label,value) in enumerate(values):
+        if i == 2: continue
+        content = html.escape(value)
+        cards.append(f'<section><h2>{html.escape(label)}</h2><textarea id="v{i}" readonly>{content}</textarea><button data-copy="v{i}">复制{html.escape(label)}</button></section>')
+    # Entirely offline. Values are escaped as text; no credentials in URLs or scripts.
+    page = '''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>3X-UI 一键中转住宅 IP</title>
+<style>body{font:17px/1.6 system-ui;margin:0;background:#111827;color:#eef2ff}main{max-width:860px;margin:40px auto;padding:20px}h1{font-size:32px}h2{font-size:19px}section{background:#1e293b;padding:20px;margin:18px 0;border-radius:12px}textarea{box-sizing:border-box;width:100%;min-height:90px;background:#111827;color:#eef2ff;border:1px solid #64748b;border-radius:6px;padding:12px;font:14px/1.5 monospace;resize:vertical}button,a{font:inherit}button{background:#93c5fd;color:#111827;border:0;border-radius:7px;padding:8px 16px;cursor:pointer;margin-top:10px}a{color:#93c5fd}#notice{position:sticky;top:0;background:#111827;padding:8px}</style>
+<main><h1>Didushan</h1><p>3X-UI 一键中转住宅 IP</p><p>点击对应按钮即可复制。这份文件包含你的账号和节点信息，请自己保存。</p><p id="notice" role="status" aria-live="polite"></p>'''
+    page += '<button data-copy="panel-all">复制全部面板信息</button><textarea id="panel-all" hidden>' + html.escape(values[2][1]) + '</textarea>'
+    page += ''.join(cards)
+    page += '''<p><a href="https://www.youtube.com/@Didushan" target="_blank" rel="noopener noreferrer">作者 YouTube 频道</a> · <a href="https://t.me/didushan9" target="_blank" rel="noopener noreferrer">电报联系</a></p></main>
+<script>document.querySelectorAll('[data-copy]').forEach(button=>button.addEventListener('click',async()=>{const source=document.getElementById(button.dataset.copy);let ok=false;try{await navigator.clipboard.writeText(source.value);ok=true}catch{const temp=document.createElement('textarea');temp.value=source.value;document.body.appendChild(temp);temp.select();ok=document.execCommand('copy');temp.remove()}document.getElementById('notice').textContent=ok?'已复制，可以粘贴了。':'浏览器未允许复制，请在文本框中全选复制。'}));</script></html>'''
+    save(ROOT / '结果.html', page)
+    save(ROOT / '登录信息与两个节点.txt', credentials(s))
+    say('结果已保存：/root/3xui-dual/结果.html（用 SSH 工具下载，双击打开即可点击复制）')
+    say('终端复制菜单：python3 /root/3xui-dual/manager.py --copy')
 
 
 def recv_exact(sock, size):
@@ -915,6 +976,7 @@ def migrate(s):
     save(ROOT / '登录信息与两个节点.txt', credentials(s))
     say('迁移完成：住宅地址直接在面板管理，TCP/UDP 均走住宅出站，新增普通入站默认直连。')
     completion(s)
+    write_results(s)
 
 
 def rollback_migration(s):
@@ -936,15 +998,18 @@ def rollback_migration(s):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='3x-ui 双节点安装（全新服务器）')
+    parser = argparse.ArgumentParser(description='3X-UI 一键中转住宅 IP')
     parser.add_argument('--resume', action='store_true', help='仅恢复本脚本未完成的部署；重新应用其配置')
     parser.add_argument('--check', action='store_true', help='只检查本脚本部署；不注入故障')
     parser.add_argument('--migrate', action='store_true', help='升级本脚本已完成的部署，保留面板及节点凭据')
     parser.add_argument('--rollback-migration', action='store_true', help='恢复中断迁移的配置备份')
+    parser.add_argument('--results', action='store_true', help='重新生成结果网页，不改节点')
+    parser.add_argument('--stats', action='store_true', help='重新同步运行次数')
+    parser.add_argument('--copy', type=int, nargs='?', const=0, choices=range(7), help='复制菜单；可直接指定 1-6')
     args = parser.parse_args()
     banner()
-    if sum((args.resume, args.check, args.migrate, args.rollback_migration)) > 1:
-        parser.error('--resume、--check、--migrate 不能同时使用')
+    if sum((args.resume, args.check, args.migrate, args.rollback_migration, args.results, args.stats, args.copy is not None)) > 1:
+        parser.error('一次只能选择一种操作。')
     os.umask(0o077)
     arch = check_os()
     global DEPLOY_LOCK
@@ -961,12 +1026,22 @@ def main():
     owned_empty = (ROOT / 'owner').is_file() and (ROOT / 'owner').read_text() == '3xui-dual-v1'
     if args.resume and not STATE.exists() and owned_empty and not APP.exists() and not Path('/etc/x-ui').exists():
         args.resume = False  # Earlier interruption during dependency installation / input wizard.
-    if args.resume or args.check or args.migrate or args.rollback_migration:
+    if args.resume or args.check or args.migrate or args.rollback_migration or args.results or args.stats or args.copy is not None:
         s = json.loads(STATE.read_text())
         if s.get('managed_by') != '3xui-dual-v1' or s['arch'] != arch:
             raise RuntimeError('不属于本脚本管理的部署。')
         # Keep the legacy state key for --resume compatibility; its value may now be a hostname.
         s['socks_ip'] = socks_host(s['socks_ip'])
+        if args.results or args.stats or args.copy is not None:
+            if not s.get('complete'):
+                raise RuntimeError('请先完成安装，再查看结果。')
+            if args.stats: completion(s)
+            elif args.copy is not None: copy_result(s, args.copy)
+            else:
+                save(ROOT / 'manager.py', Path(__file__).read_text())
+                completion(s)
+                write_results(s)
+            return
         if args.rollback_migration:
             rollback_migration(s)
             return
@@ -1007,7 +1082,7 @@ def main():
                 raise ValueError('SOCKS5 用户名和密码必须为 1–255 字节。')
         if ':' in su:
             raise ValueError('当前脚本的 curl 检测不支持含冒号的用户名。')
-        email = ask('证书 ACME 账户邮箱')
+        email = ask('邮箱地址（申请面板 HTTPS 证书用，不需要邮箱密码）')
         if not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email):
             raise ValueError('邮箱格式无效。')
         target = ask('REALITY 目标域名（不需要你拥有）', 'dl.google.com').lower()

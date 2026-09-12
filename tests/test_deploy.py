@@ -237,7 +237,7 @@ class DeploymentTests(unittest.TestCase):
 
     def test_counter_failure_does_not_fail_deployment_and_reuses_event(self):
         s = state()
-        with patch.object(m, 'save'), patch.object(m.http.client, 'HTTPSConnection', side_effect=OSError('offline')):
+        with patch.object(m, 'save'), patch.object(m.subprocess, 'run', side_effect=OSError('offline')):
             m.completion(s)
             event = s['counter_event']
             m.completion(s)

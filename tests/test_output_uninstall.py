@@ -1,0 +1,109 @@
+"""Output escaping and destructive cleanup tested only inside temporary fake servers."""
+import base64
+import io
+import json
+import os
+import re
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+from unittest.mock import patch
+from test_deploy import m, state
+
+
+class OutputTests(unittest.TestCase):
+    def test_counter_success_posts_only_event_and_reuses_it(self):
+        s = state()
+        reply = subprocess.CompletedProcess([], 0, '{"count":7}', '')
+        with patch.object(m, 'save'), patch.object(m.subprocess, 'run', return_value=reply) as call:
+            m.completion(s)
+            event = s['counter_event']
+            m.completion(s)
+        self.assertEqual(s['last_global_count'], 7)
+        self.assertEqual(json.loads(call.call_args.kwargs['input']), {'event_id':event})
+        self.assertNotIn('--insecure', call.call_args.args[0])
+
+    def test_counter_bad_response_never_blocks_results(self):
+        for response in ['[]', 'null', '{"count":true}', '{"count":-1}', 'bad json']:
+            with self.subTest(response=response), patch.object(m,'save'), patch.object(m.subprocess,'run',return_value=subprocess.CompletedProcess([],0,response,'')):
+                s=state();m.completion(s);self.assertIn('counter_error',s)
+
+    def test_result_escapes_values_and_has_private_permissions(self):
+        s=state();s['password']='</textarea><script>alert(1)</script>&"'
+        with tempfile.TemporaryDirectory() as td, patch.object(m,'ROOT',Path(td)):
+            m.write_results(s)
+            p=Path(td)/'结果.html'; content=p.read_text()
+            self.assertNotIn(s['password'],content)
+            self.assertIn('&lt;/textarea&gt;',content)
+            self.assertEqual(content.count('data-copy='),6)
+            self.assertNotIn('<script src=',content)
+            self.assertEqual(p.stat().st_mode & 0o777,0o600)
+            self.assertEqual(m.copy_values(s)[5][1],s['password'])
+
+    def test_terminal_copy_encodes_exact_value(self):
+        s=state(); out=io.StringIO()
+        with patch.object(m.sys,'stdout',out),patch.object(out,'isatty',return_value=True):
+            m.copy_result(s,3)
+        encoded=out.getvalue().split('\033]52;c;',1)[1].split('\a',1)[0]
+        self.assertEqual(base64.b64decode(encoded).decode(),m.copy_values(s)[2][1])
+
+
+class UninstallTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory();self.base=Path(self.temp.name)
+        for directory in ['root','etc/systemd/system','usr/local','run/lock','tmp','bin']:
+            (self.base/directory).mkdir(parents=True,exist_ok=True)
+        self.root=self.base/'root/3xui-dual';self.unit=self.base/'etc/systemd/system/x-ui.service'
+        script=(Path(__file__).resolve().parents[1]/'uninstall-3xui-relay.sh').read_text()
+        # Never run against host paths, and never invoke host service/firewall tools.
+        script=script.replace('[[ "$(uname -s)" == Linux && "$EUID" -eq 0 ]]','[[ 1 == 1 ]]')
+        script=re.sub(r'/root|/etc|/usr/local|/run/lock|/tmp',lambda match:str(self.base/match.group(0).lstrip('/')),script)
+        self.script=self.base/'uninstall.sh';self.script.write_text(script)
+        for name,body in {'systemctl':'exit 0','flock':'exit 0','ufw':'exit 0'}.items():
+            p=self.base/'bin'/name;p.write_text('#!/bin/bash\n'+body+'\n');p.chmod(0o755)
+        self.env=dict(os.environ,PATH=str(self.base/'bin')+':/usr/bin:/bin')
+    def tearDown(self): self.temp.cleanup()
+    def run_script(self):
+        return subprocess.run(['bash',str(self.script)],env=self.env,capture_output=True,text=True,errors='replace')
+    def managed(self,kind):
+        self.root.mkdir()
+        if kind=='marker':(self.root/'owner').write_text('3xui-dual-v1\n')
+        if kind=='state':(self.root/'state.json').write_text('{"managed_by": "3xui-dual-v1"}')
+        if kind=='unit':self.unit.write_text('Description=3x-ui panel (dual-node deployment)\n')
+        (self.root/'private').write_text('dummy')
+        for path in ['usr/local/x-ui','etc/x-ui']:
+            p=self.base/path;p.mkdir();(p/'test').write_text('dummy')
+    def test_early_failure_and_repeat(self):
+        for _ in range(2):self.assertEqual(self.run_script().returncode,0)
+    def test_partial_complete_and_migration_cleanup(self):
+        for kind in ['marker','state','unit']:
+            with self.subTest(kind=kind):
+                self.managed(kind)
+                (self.root/'migration-backup.json').write_text('{}')
+                result=self.run_script();self.assertEqual(result.returncode,0,result.stderr+result.stdout)
+                self.assertFalse(self.root.exists());self.assertFalse(self.unit.exists())
+                self.assertFalse((self.base/'etc/x-ui').exists())
+                self.assertEqual(self.run_script().returncode,0)
+    def test_unrelated_panel_is_preserved(self):
+        p=self.base/'etc/x-ui';p.mkdir();(p/'important').write_text('keep')
+        self.assertNotEqual(self.run_script().returncode,0);self.assertTrue((p/'important').exists())
+    def test_replaced_service_is_preserved(self):
+        self.managed('marker');self.unit.write_text('Description=other panel\n')
+        self.assertNotEqual(self.run_script().returncode,0);self.assertTrue(self.root.exists())
+    def test_service_stop_failure_preserves_files(self):
+        self.managed('marker');(self.base/'bin/systemctl').write_text('#!/bin/bash\n[[ "$1" != stop ]]\n')
+        self.assertNotEqual(self.run_script().returncode,0);self.assertTrue(self.root.exists())
+
+    def test_unknown_deployment_files_are_preserved(self):
+        self.root.mkdir();(self.root/'unknown').write_text('keep')
+        self.assertNotEqual(self.run_script().returncode,0)
+        self.assertTrue((self.root/'unknown').exists())
+
+    def test_only_recorded_tagged_firewall_rules_are_removed(self):
+        self.managed('marker');(self.root/'ufw-added.txt').write_text('23456\n34567\n')
+        log=self.base/'ufw-log'
+        tool=self.base/'bin/ufw'
+        tool.write_text('#!/bin/bash\nif [[ "$1" == status ]]; then\n echo "23456/tcp ALLOW Anywhere # Didushan-3xui-relay"\n echo "34567/tcp ALLOW Anywhere"\nelse\n echo "$*" >> "'+str(log)+'"\nfi\n')
+        result=self.run_script();self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(log.read_text().strip(),'--force delete allow 23456/tcp')
