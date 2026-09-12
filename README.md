@@ -49,7 +49,18 @@
 curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main/deploy-3xui-dual.sh' -o /root/deploy-3xui-dual.sh && bash /root/deploy-3xui-dual.sh
 ```
 
-## 三、装好后得到什么
+## 三、原理阐述
+
+这个脚本会在你的 VPS 上安装 3X-UI 面板，并自动配置两条节点。3X-UI 用来管理节点，实际转发流量的是它使用的 Xray 内核。
+
+- **服务器直连节点**：你的电脑或手机 → VPS 服务器 → 目标网站，网站看到的是服务器 IP。
+- **住宅中转节点**：你的电脑或手机 → VPS 服务器 → 住宅 SOCKS5 代理 → 目标网站，网站看到的是住宅代理的出口 IP。
+
+住宅中转就是把服务器节点和住宅代理串起来，形成“链式代理”。你的客户端先通过 VLESS + REALITY + XTLS Vision 连接服务器，服务器再按脚本配置好的路由，把住宅节点的流量交给你填写的 SOCKS5 代理。
+
+你只需要填写住宅代理信息，脚本会自动完成节点创建和路由绑定，并给出可导入客户端的链接。住宅 IP 由你的代理商提供，脚本负责配置中转。
+
+## 四、装好后得到什么
 
 - **面板登录信息**：打开输出的完整 HTTPS 地址，用给出的用户名和密码登录。
 - **服务器直连节点**：上网时使用你的服务器 IP。
@@ -58,7 +69,7 @@ curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main
 两条节点链接复制后，分别导入客户端测试。服务器上的自检通过后，仍要用自己的电脑或手机确认能连接。
 
 
-## 四、一键卸载
+## 五、一键卸载
 
 安装中途失败，或者装好了不想用，都可以运行下面的命令。**会删除本脚本安装的面板、节点、账号、证书及部署资料，原链接随即失效。** 卸载后可以重新安装。
 
@@ -66,7 +77,7 @@ curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main
 curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main/uninstall-3xui-relay.sh' -o /root/uninstall-3xui-relay.sh && bash /root/uninstall-3xui-relay.sh
 ```
 
-## 五、需要注意
+## 六、需要注意
 
 - 安装的是 **3X-UI v3.7.0**。提示 REALITY 目标域名时，可先回车使用默认值；不需要你拥有这个域名。
 - 住宅代理只支持 TCP 时，TCP 可以正常用；支持 UDP 且网络畅通时，UDP 也走住宅代理。住宅代理故障时，这个节点不会自动改用服务器 IP。
