@@ -17,6 +17,7 @@ import secrets
 import shutil
 import socket
 import ssl
+import struct
 import sqlite3
 import subprocess
 import sys
@@ -344,6 +345,7 @@ def inbound(s, item):
         'streamSettings': json.dumps({'network': 'tcp', 'security': 'reality', 'tcpSettings': {},
             'realitySettings': {'show': False, 'target': s['target'] + ':443', 'xver': 0,
                 'serverNames': [s['target']], 'privateKey': item['private'],
+                'minClientVer': '1.8.0',
                 'shortIds': [item['sid']],
                 'settings': {'publicKey': item['public'], 'fingerprint': 'chrome',
                              'serverName': s['target'], 'spiderX': '/'}}}),
@@ -353,25 +355,24 @@ def inbound(s, item):
 
 
 def template(s):
-    # Explicit default-deny: no unmatched request can fall through to freedom.
+    # New ordinary inbounds use the server; residential TCP and UDP have an explicit route.
     return {
         'log': {'access': 'none', 'loglevel': 'warning'},
         'api': {'tag': 'api', 'services': ['HandlerService', 'LoggerService', 'StatsService', 'RoutingService']},
         'inbounds': [{'tag': 'api', 'listen': '127.0.0.1', 'port': s['api_port'],
                       'protocol': 'tunnel', 'settings': {'rewriteAddress': '127.0.0.1'}}],
         'outbounds': [
-            {'tag': 'blocked', 'protocol': 'blackhole', 'settings': {}},
             {'tag': 'server-out', 'protocol': 'freedom', 'settings': {'domainStrategy': 'UseIPv4',
                 'finalRules': [{'action': 'block', 'ip': ['geoip:private']}, {'action': 'allow'}]}},
+            {'tag': 'blocked', 'protocol': 'blackhole', 'settings': {}},
             {'tag': 'residential-out', 'protocol': 'socks', 'settings': {'servers': [
-                {'address': '127.0.0.1', 'port': s['bridge_port'],
+                {'address': s['socks_ip'], 'port': s['socks_port'],
                  'users': [{'user': s['socks_user'], 'pass': s['socks_password']}]}]}},
         ],
         'routing': {'domainStrategy': 'AsIs', 'rules': [
             {'type': 'field', 'inboundTag': ['api'], 'outboundTag': 'api'},
-            {'type': 'field', 'inboundTag': [HOME_TAG], 'network': 'udp', 'outboundTag': 'blocked'},
             {'type': 'field', 'ip': ['geoip:private'], 'outboundTag': 'blocked'},
-            {'type': 'field', 'inboundTag': [HOME_TAG], 'network': 'tcp', 'outboundTag': 'residential-out'},
+            {'type': 'field', 'inboundTag': [HOME_TAG], 'network': 'tcp,udp', 'outboundTag': 'residential-out'},
             {'type': 'field', 'inboundTag': [DIRECT_TAG], 'outboundTag': 'server-out'},
         ]},
         'policy': {'levels': {'0': {'statsUserUplink': True, 'statsUserDownlink': True}},
@@ -394,25 +395,24 @@ def get_template(api):
 
 def validate_routes(value):
     out = value.get('outbounds', [])
-    if not out or out[0].get('protocol') != 'blackhole':
-        raise RuntimeError('默认出口不再是阻断，停止验收。')
+    if not out or out[0].get('tag') != 'server-out' or out[0].get('protocol') != 'freedom':
+        raise RuntimeError('默认出口应为服务器直连。')
     rules = value.get('routing', {}).get('rules', [])
-    expected = [('udp', 'blocked'), ('tcp', 'residential-out')]
+    expected = [('tcp,udp', 'residential-out')]
     actual = [(r.get('network'), r.get('outboundTag')) for r in rules if HOME_TAG in r.get('inboundTag', [])]
     if actual != expected:
-        raise RuntimeError('住宅路由已改变，请检查 UDP 阻断及 TCP 固定出口。')
+        raise RuntimeError('住宅 TCP/UDP 必须绑定住宅出站。')
     if value.get('routing', {}).get('domainStrategy') != 'AsIs':
         raise RuntimeError('路由 DNS 策略已改变。')
     if any('balancerTag' in r for r in rules) or value.get('routing', {}).get('balancers'):
         raise RuntimeError('出现负载均衡/回退配置，停止验收。')
     expected_rules = [
         {'type': 'field', 'inboundTag': ['api'], 'outboundTag': 'api'},
-        {'type': 'field', 'inboundTag': [HOME_TAG], 'network': 'udp', 'outboundTag': 'blocked'},
         {'type': 'field', 'ip': ['geoip:private'], 'outboundTag': 'blocked'},
-        {'type': 'field', 'inboundTag': [HOME_TAG], 'network': 'tcp', 'outboundTag': 'residential-out'},
+        {'type': 'field', 'inboundTag': [HOME_TAG], 'network': 'tcp,udp', 'outboundTag': 'residential-out'},
         {'type': 'field', 'inboundTag': [DIRECT_TAG], 'outboundTag': 'server-out'},
     ]
-    if rules != expected_rules:
+    if rules[:len(expected_rules)] != expected_rules:
         raise RuntimeError('路由顺序或规则已被修改；请人工核对后再使用检查工具。')
     home = next((o for o in out if o.get('tag') == 'residential-out'), {})
     if home.get('protocol') != 'socks' or any(k in home for k in ('proxySettings', 'streamSettings')):
@@ -432,13 +432,13 @@ def client(s):
            'routing': {'rules': []}}
     for n, p in zip(s['nodes'], ports):
         cfg['inbounds'].append({'tag': n['tag'], 'listen': '127.0.0.1', 'port': p,
-                                'protocol': 'socks', 'settings': {'auth': 'noauth', 'udp': False}})
+                                'protocol': 'socks', 'settings': {'auth': 'noauth', 'udp': True, 'ip': '127.0.0.1'}})
         cfg['outbounds'].append({'tag': n['tag'], 'protocol': 'vless',
             'settings': {'vnext': [{'address': '127.0.0.1', 'port': n['port'],
                 'users': [{'id': n['uuid'], 'encryption': 'none', 'flow': 'xtls-rprx-vision'}]}]},
             'streamSettings': {'network': 'tcp', 'security': 'reality',
                 'realitySettings': {'serverName': s['target'], 'fingerprint': 'chrome',
-                                   'password': n['public'], 'shortId': n['sid'], 'spiderX': '/'}}})
+                                   'publicKey': n['public'], 'shortId': n['sid'], 'spiderX': '/'}}})
         cfg['routing']['rules'].append({'type': 'field', 'inboundTag': [n['tag']], 'outboundTag': n['tag']})
     with tempfile.TemporaryDirectory(prefix='probe-', dir=ROOT) as td:
         path = Path(td) / 'client.json'
@@ -490,9 +490,8 @@ def selftest(s, tls=False, failure=False):
     validate_routes(original)
     home_out = next(o for o in original['outbounds'] if o['tag'] == 'residential-out')
     servers = home_out['settings']['servers']
-    if len(servers) != 1 or servers[0]['address'] != '127.0.0.1' or servers[0]['port'] != s['bridge_port']:
-        raise RuntimeError('住宅出口不再指向本脚本的本机转发服务。')
-    run(['systemctl', 'is-active', '--quiet', '3xui-dual-socks-bridge'])
+    if len(servers) != 1 or servers[0]['address'] != s['socks_ip'] or servers[0]['port'] != s['socks_port']:
+        raise RuntimeError('住宅出站地址与部署记录不同，请检查面板配置。')
     with client(s) as proxies:
         server_ip = fetch_ip(proxies[0])
         home_ip = fetch_ip(proxies[1])
@@ -505,6 +504,8 @@ def selftest(s, tls=False, failure=False):
             raise RuntimeError('住宅节点出口与服务器出口相同，停止验收。')
         if home_ip != upstream:
             say('两次住宅出口 IP 不同，记录检测结果；不以两次 IP 相同作为验收条件。')
+        udp_ok = udp_probe(proxies[1])
+        say('住宅 UDP 实测通过。' if udp_ok else '住宅 UDP 暂未测通（上游不支持或网络限制）；TCP 不受影响，UDP 仍固定走住宅出站。')
         if failure:
             say('正在模拟住宅上游连接失败，确认住宅入口失败且服务器入口仍可用……')
             # Reserve a bound, NON-listening socket. No firewall changes, DNS changes, or real credentials are modified.
@@ -523,6 +524,8 @@ def selftest(s, tls=False, failure=False):
                         pass
                     else:
                         raise RuntimeError('严重：住宅上游失效后请求仍成功，拒绝发布结果。')
+                    if udp_ok and udp_probe(proxies[1]):
+                        raise RuntimeError('住宅上游失效后 UDP 仍成功，拒绝发布结果。')
                     if fetch_ip(proxies[0]) != direct:
                         raise RuntimeError('模拟故障期间服务器节点异常。')
                 finally:
@@ -533,7 +536,7 @@ def selftest(s, tls=False, failure=False):
                 if home_ip == direct:
                     raise RuntimeError('恢复后住宅节点出口异常。')
     result = {'server_exit': server_ip, 'residential_exit': home_ip,
-              'upstream_exit': upstream, 'failure_test_passed': failure,
+              'upstream_exit': upstream, 'failure_test_passed': failure, 'residential_udp_test_passed': udp_ok,
               'tested_at': time.strftime('%Y-%m-%d %H:%M:%S %z'),
               'scope': 'server-local real protocol test; external client connectivity still requires checking'}
     save(ROOT / 'test-result.json', result)
@@ -550,7 +553,7 @@ def credentials(s):
             'sni': s['target'], 'fp': 'chrome', 'pbk': n['public'], 'sid': n['sid'],
             'type': 'tcp', 'flow': 'xtls-rprx-vision', 'spx': '/'})
         lines += ['', n['name'], f"vless://{n['uuid']}@{s['ip']}:{n['port']}?{query}#{urllib.parse.quote(n['name'])}"]
-    lines += ['', '住宅入口仅转发 TCP；UDP 阻断，不会回退到服务器出口。',
+    lines += ['', '住宅 TCP/UDP 均固定走住宅出站；UDP 实际可用性取决于供应商与网络，不回退到服务器出口。',
               '客户端请关闭 Mux；住宅节点使用远端 DNS/DoH，避免本地 DNS 和分流绕过。',
               '还需从你的电脑/手机导入测试；服务器回环测试不证明云防火墙已放行。',
               '检查：python3 /root/3xui-dual/manager.py --check',
@@ -639,7 +642,7 @@ def deploy(s):
             if tls.selected_alpn_protocol() != 'h2':
                 raise RuntimeError('REALITY 目标不支持 h2，请更换目标。')
     save(STATE, s)
-    available_ports([80, s['panel_port'], s['api_port'], s['bridge_port']] + [n['port'] for n in s['nodes']])
+    available_ports([80, s['panel_port'], s['api_port']] + [n['port'] for n in s['nodes']])
     # Manage only UFW if it is already active; never flush firewall rules or change SSH rules.
     if shutil.which('firewall-cmd') and run(['firewall-cmd', '--state'], check=False).returncode == 0:
         raise RuntimeError('检测到 firewalld，请先手动放行所列端口，再处理防火墙适配；脚本不会替换防火墙。')
@@ -679,7 +682,7 @@ def deploy(s):
     save('/etc/systemd/system/x-ui.service', '''[Unit]
 Description=3x-ui panel (dual-node deployment)
 After=network-online.target
-Wants=network-online.target 3xui-dual-socks-bridge.service
+Wants=network-online.target
 [Service]
 Type=simple
 User=root
@@ -691,25 +694,6 @@ ExecStart=/usr/local/x-ui/x-ui
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=1048576
-[Install]
-WantedBy=multi-user.target
-''')
-    save('/etc/systemd/system/3xui-dual-socks-bridge.service', f'''[Unit]
-Description=Loopback TCP relay to residential SOCKS5 provider
-After=network-online.target
-Wants=network-online.target
-[Service]
-Type=simple
-DynamicUser=yes
-NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectSystem=strict
-ProtectHome=yes
-RestrictAddressFamilies=AF_INET
-ExecStart=/usr/bin/socat TCP4-LISTEN:{s['bridge_port']},bind=127.0.0.1,reuseaddr,fork TCP4:{s['socks_ip']}:{s['socks_port']},connect-timeout=10
-Restart=on-failure
-RestartSec=3
-LimitNOFILE=65536
 [Install]
 WantedBy=multi-user.target
 ''')
@@ -726,7 +710,7 @@ WantedBy=multi-user.target
         save(STATE, s)
     desired = template(s)
     save(ROOT / 'routing-recovery.json', desired)
-    # Install fail-closed routing BEFORE creating any public inbound.
+    # Install explicit residential routing BEFORE creating any public inbound.
     update_template(api, desired)
     existing = api.request('panel/api/inbounds/list')
     if any(n['tag'] not in {DIRECT_TAG, HOME_TAG} for n in existing):
@@ -745,7 +729,7 @@ WantedBy=multi-user.target
     run(['systemctl', 'stop', 'x-ui'])
     run([BIN, 'setting', '-listenIP', '0.0.0.0'], cwd=APP)
     run(['systemctl', 'enable', '--now', 'x-ui'])
-    run(['systemctl', 'enable', '--now', '3xui-dual-socks-bridge'])
+    run(['systemctl', 'disable', '--now', '3xui-dual-socks-bridge'], check=False)
     wait_panel(s, True)
     run(['systemctl', 'start', '3xui-dual-renew.service'], timeout=650)
     s['complete'] = True
@@ -754,15 +738,213 @@ WantedBy=multi-user.target
     say('\n部署及服务器本机协议测试通过。面板证书已验证，续期任务已启用。')
     say(credentials(s))
     say(f'结果已保存：{ROOT}/登录信息与两个节点.txt')
+    completion(s)
+
+
+COUNTER_URL = 'https://didushan-script-counter.cooperk717.chatgpt.site/api/runs'
+
+
+def banner():
+    art = '''DDDD   III  DDDD   U   U  SSSS  H   H   AAA   N   N
+D   D   I   D   D  U   U S      H   H  A   A  NN  N
+D   D   I   D   D  U   U  SSS   HHHHH  AAAAA  N N N
+D   D   I   D   D  U   U     S  H   H  A   A  N  NN
+DDDD   III  DDDD    UUU  SSSS   H   H  A   A  N   N'''
+    say(art if shutil.get_terminal_size((80, 24)).columns >= 55 else '=== Didushan ===')
+    say('Didushan | 3x-ui 双节点部署\n')
+
+
+def completion(s):
+    # One id per completed installation/migration; retrying the POST is idempotent.
+    s.setdefault('counter_event', str(uuid.uuid4()))
+    save(STATE, s)
+    try:
+        conn = http.client.HTTPSConnection(urllib.parse.urlsplit(COUNTER_URL).hostname, timeout=5)
+        try:
+            conn.request('POST', '/api/runs', body=json.dumps({'event_id': s['counter_event']}),
+                         headers={'Content-Type': 'application/json'})
+            response = conn.getresponse()
+            data = json.loads(response.read(4096))
+            if response.status != 200 or type(data.get('count')) is not int or data['count'] < 0:
+                raise ValueError('invalid count')
+            say(f"脚本全局累计成功运行次数：{data['count']}（统计启用后）")
+        finally:
+            conn.close()
+    except (OSError, ValueError, http.client.HTTPException):
+        say('脚本全局累计成功运行次数：统计暂不可用，不影响本次部署。')
+    say('作者 YouTube 频道：https://www.youtube.com/@Didushan')
+    say('电报联系方式：https://t.me/didushan9')
+
+
+def recv_exact(sock, size):
+    data = b''
+    while len(data) < size:
+        part = sock.recv(size - len(data))
+        if not part:
+            raise OSError('SOCKS connection closed')
+        data += part
+    return data
+
+
+def udp_probe(proxy):
+    """A real DNS UDP exchange through the temporary local SOCKS->VLESS client.
+    No direct UDP fallback. TCP-only suppliers may fail this optional probe.
+    """
+    host = urllib.parse.urlsplit(proxy)
+    try:
+        with socket.create_connection((host.hostname, host.port), timeout=4) as control:
+            control.settimeout(4)
+            control.sendall(b'\x05\x01\x00')
+            if recv_exact(control, 2) != b'\x05\x00':
+                return False
+            control.sendall(b'\x05\x03\x00\x01' + b'\x00' * 6)
+            head = recv_exact(control, 4)
+            if head[:3] != b'\x05\x00\x00':
+                return False
+            if head[3] == 1:
+                address = socket.inet_ntoa(recv_exact(control, 4))
+            elif head[3] == 3:
+                address = recv_exact(control, recv_exact(control, 1)[0]).decode('ascii')
+            elif head[3] == 4:
+                address = socket.inet_ntop(socket.AF_INET6, recv_exact(control, 16))
+            else:
+                return False
+            udp_port = struct.unpack('!H', recv_exact(control, 2))[0]
+            if address in ('0.0.0.0', '::'):
+                address = host.hostname
+            family = socket.AF_INET6 if ':' in address else socket.AF_INET
+            with socket.socket(family, socket.SOCK_DGRAM) as udp:
+                udp.settimeout(3)
+                udp.connect((address, udp_port))
+                for resolver in ('1.1.1.1', '8.8.8.8'):
+                    ident = secrets.token_bytes(2)
+                    query = ident + b'\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00' + b'\x07example\x03com\x00\x00\x01\x00\x01'
+                    udp.send(b'\x00\x00\x00\x01' + socket.inet_aton(resolver) + b'\x00\x35' + query)
+                    try:
+                        packet = udp.recv(4096)
+                    except socket.timeout:
+                        continue
+                    if len(packet) < 10 or packet[:3] != b'\x00\x00\x00':
+                        continue
+                    offset = {1: 10, 4: 22}.get(packet[3])
+                    if packet[3] == 3:
+                        offset = 7 + packet[4]
+                    if offset is None:
+                        continue
+                    dns = packet[offset:]
+                    if len(dns) >= 12 and dns[:2] == ident and dns[2] & 128 and dns[3] & 15 == 0 and dns[6:8] != b'\x00\x00':
+                        return True
+    except (OSError, ValueError, IndexError, UnicodeError):
+        pass
+    return False
+
+
+def migration_template(old, s):
+    value = copy.deepcopy(old)
+    outbounds = value['outbounds']
+    home = next(o for o in outbounds if o.get('tag') == 'residential-out')
+    servers = home['settings']['servers']
+    if len(servers) != 1:
+        raise RuntimeError('住宅出站有多个地址，不能自动迁移。')
+    server = servers[0]
+    if server['address'] == '127.0.0.1' and server['port'] == s.get('bridge_port'):
+        server['address'], server['port'] = s['socks_ip'], s['socks_port']
+    else:
+        # Preserve a provider already changed in the panel.
+        s['socks_ip'] = socks_host(server['address'])
+        s['socks_port'] = server['port']
+    users = server.get('users', [])
+    if len(users) != 1:
+        raise RuntimeError('住宅认证配置已改变，不能自动迁移。')
+    s['socks_user'], s['socks_password'] = users[0]['user'], users[0]['pass']
+    direct = next(o for o in outbounds if o.get('tag') == 'server-out')
+    value['outbounds'] = [direct] + [o for o in outbounds if o is not direct]
+    rules = value['routing']['rules']
+    rules[:] = [r for r in rules if not (r.get('inboundTag') == [HOME_TAG] and r.get('network') == 'udp' and r.get('outboundTag') == 'blocked')]
+    for r in rules:
+        if r.get('inboundTag') == [HOME_TAG] and r.get('outboundTag') == 'residential-out':
+            r['network'] = 'tcp,udp'
+    validate_routes(value)
+    return value
+
+
+def migrate(s):
+    if not s.get('complete'):
+        raise RuntimeError('尚未完成的安装请使用 --resume。')
+    api = wait_panel(s, True)
+    backup = ROOT / 'migration-backup.json'
+    if backup.exists():
+        previous = json.loads(backup.read_text())
+        if previous.get('pending'):
+            raise RuntimeError('上次迁移中断，请先运行 --rollback-migration 恢复，再重试。')
+    old = get_template(api)
+    entries = api.request('panel/api/inbounds/list')
+    managed = [i for i in entries if i.get('tag') in (DIRECT_TAG, HOME_TAG)]
+    if len(managed) != 2:
+        raise RuntimeError('未找到原来的两个入站，停止迁移。')
+    old_state = copy.deepcopy(s)
+    desired = migration_template(old, s)
+    record = {'pending': True, 'state': old_state, 'template': old, 'inbounds': managed}
+    save(backup, record)
+    try:
+        update_template(api, desired)
+        for entry in managed:
+            item = copy.deepcopy(entry)
+            stream = json.loads(item['streamSettings'])
+            stream['realitySettings']['minClientVer'] = '1.8.0'
+            item['streamSettings'] = json.dumps(stream)
+            api.request('panel/api/inbounds/update/' + str(item['id']), item)
+        restart(s, True)
+        selftest(s, True, failure=True)
+    except BaseException:
+        rollback_migration(s)
+        raise
+    record['pending'] = False
+    save(backup, record)
+    # Service is no longer in the data path; remove only our own dependency.
+    unit = Path('/etc/systemd/system/x-ui.service')
+    if unit.exists():
+        save(unit, unit.read_text().replace(' 3xui-dual-socks-bridge.service', ''))
+    run(['systemctl', 'disable', '--now', '3xui-dual-socks-bridge'], check=False)
+    run(['systemctl', 'daemon-reload'])
+    s['schema_version'] = 2
+    s['counter_event'] = str(uuid.uuid4())
+    save(STATE, s)
+    save(ROOT / 'routing-recovery.json', desired)
+    shutil.copyfile(Path(__file__), ROOT / 'manager.py') if Path(__file__).resolve() != ROOT / 'manager.py' else None
+    save(ROOT / '登录信息与两个节点.txt', credentials(s))
+    say('迁移完成：住宅地址直接在面板管理，TCP/UDP 均走住宅出站，新增普通入站默认直连。')
+    completion(s)
+
+
+def rollback_migration(s):
+    backup = ROOT / 'migration-backup.json'
+    record = json.loads(backup.read_text())
+    if not record.get('pending'):
+        raise RuntimeError('没有待恢复的中断迁移。')
+    api = wait_panel(record['state'], True)
+    update_template(api, record['template'])
+    for entry in record['inbounds']:
+        api.request('panel/api/inbounds/update/' + str(entry['id']), entry)
+    if record['state'].get('bridge_port'):
+        run(['systemctl', 'start', '3xui-dual-socks-bridge'])
+    restart(record['state'], True)
+    save(STATE, record['state'])
+    record['pending'] = False
+    save(backup, record)
+    say('已恢复迁移前的路由和入站配置。')
 
 
 def main():
     parser = argparse.ArgumentParser(description='3x-ui 双节点安装（全新服务器）')
     parser.add_argument('--resume', action='store_true', help='仅恢复本脚本未完成的部署；重新应用其配置')
     parser.add_argument('--check', action='store_true', help='只检查本脚本部署；不注入故障')
+    parser.add_argument('--migrate', action='store_true', help='升级本脚本已完成的部署，保留面板及节点凭据')
+    parser.add_argument('--rollback-migration', action='store_true', help='恢复中断迁移的配置备份')
     args = parser.parse_args()
-    if args.resume and args.check:
-        parser.error('--resume 和 --check 不能同时使用')
+    banner()
+    if sum((args.resume, args.check, args.migrate, args.rollback_migration)) > 1:
+        parser.error('--resume、--check、--migrate 不能同时使用')
     os.umask(0o077)
     arch = check_os()
     global DEPLOY_LOCK
@@ -779,12 +961,18 @@ def main():
     owned_empty = (ROOT / 'owner').is_file() and (ROOT / 'owner').read_text() == '3xui-dual-v1'
     if args.resume and not STATE.exists() and owned_empty and not APP.exists() and not Path('/etc/x-ui').exists():
         args.resume = False  # Earlier interruption during dependency installation / input wizard.
-    if args.resume or args.check:
+    if args.resume or args.check or args.migrate or args.rollback_migration:
         s = json.loads(STATE.read_text())
         if s.get('managed_by') != '3xui-dual-v1' or s['arch'] != arch:
             raise RuntimeError('不属于本脚本管理的部署。')
         # Keep the legacy state key for --resume compatibility; its value may now be a hostname.
         s['socks_ip'] = socks_host(s['socks_ip'])
+        if args.rollback_migration:
+            rollback_migration(s)
+            return
+        if args.migrate:
+            migrate(s)
+            return
         if args.check:
             selftest(s, True, failure=False)
             run(['openssl', 'x509', '-in', CERT / 'fullchain.pem', '-noout', '-checkend', '172800'])
@@ -829,11 +1017,10 @@ def main():
         hp = ask_port('住宅中转节点端口（回车使用随机默认值）', {80, dp})
         pp = ask_port('面板 HTTPS 端口', {80, dp, hp})
         ap = random_port({80, dp, hp, pp})
-        bp = random_port({80, dp, hp, pp, ap})
         s = {'managed_by': '3xui-dual-v1', 'version': VERSION, 'arch': arch, 'ip': ip,
              'socks_ip': socks_ip, 'socks_port': sp, 'socks_user': su, 'socks_password': pw,
              'email': email, 'target': target,
-             'panel_port': pp, 'api_port': ap, 'bridge_port': bp, 'username': 'admin_' + secrets.token_hex(4),
+             'panel_port': pp, 'api_port': ap, 'username': 'admin_' + secrets.token_hex(4),
              'password': secrets.token_urlsafe(24), 'base': '/' + secrets.token_hex(12) + '/',
              'nodes': make_nodes(dp, hp)}
         save(STATE, s)

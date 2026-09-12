@@ -58,7 +58,8 @@ class DeploymentTests(unittest.TestCase):
                  RuntimeError('upstream unavailable'), '8.8.8.8', '9.9.9.10']
         with patch.object(m, 'wait_panel'), \
              patch.object(m, 'get_template', return_value=m.template(s)), \
-             patch.object(m, 'client', fake_client), patch.object(m, 'run'), \
+             patch.object(m, 'client', fake_client), patch.object(m, 'udp_probe', return_value=False), \
+             patch.object(m, 'run'), \
              patch.object(m, 'fetch_ip', side_effect=exits), \
              patch.object(m, 'restart'), patch.object(m, 'update_template'), \
              patch.object(m, 'save') as save:
@@ -129,12 +130,12 @@ class DeploymentTests(unittest.TestCase):
                          ('secret', 'pub'))
         self.assertEqual(m.parse_x25519('Private key: secret\nPublic key: pub\n'), ('secret', 'pub'))
 
-    def test_config_preserves_credentials_and_uses_loopback(self):
+    def test_config_preserves_credentials_and_shows_provider(self):
         s = state()
         cfg = m.template(s)
         m.validate_routes(cfg)
         home = cfg['outbounds'][2]['settings']['servers'][0]
-        self.assertEqual(home['address'], '127.0.0.1')
+        self.assertEqual(home['address'], s['socks_ip'])
         self.assertEqual(home['users'][0]['pass'], s['socks_password'])
         self.assertEqual(json.loads(json.dumps(cfg)), cfg)
 
@@ -144,7 +145,7 @@ class DeploymentTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             m.validate_routes(cfg)
 
-    def test_udp_allow_and_default_freedom_are_rejected(self):
+    def test_wrong_residential_route_and_default_are_rejected(self):
         cfg = m.template(state())
         cfg['routing']['rules'][1]['outboundTag'] = 'server-out'
         with self.assertRaises(RuntimeError):
@@ -199,6 +200,7 @@ class DeploymentTests(unittest.TestCase):
         with patch.object(m, 'wait_panel', return_value=api), \
              patch.object(m, 'get_template', return_value=original), \
              patch.object(m, 'client', fake_client), \
+             patch.object(m, 'udp_probe', return_value=False), \
              patch.object(m, 'run'), \
              patch.object(m, 'fetch_ip', side_effect=exits), \
              patch.object(m, 'restart', return_value=api), \
@@ -208,6 +210,67 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(update.call_count, 2)
         self.assertEqual(update.call_args_list[-1].args[1], original)
         self.assertNotEqual(update.call_args_list[0].args[1], original)
+
+    def test_migration_replaces_bridge_and_preserves_extensions(self):
+        s = state()
+        old = m.template(s)
+        old['outbounds'] = [old['outbounds'][1], old['outbounds'][0], old['outbounds'][2]]
+        old['outbounds'][2]['settings']['servers'][0].update(address='127.0.0.1', port=s['bridge_port'])
+        old['routing']['rules'][2]['network'] = 'tcp'
+        old['routing']['rules'].insert(1, {'type':'field', 'inboundTag':[m.HOME_TAG], 'network':'udp', 'outboundTag':'blocked'})
+        extra = {'tag':'another-home', 'protocol':'socks', 'settings':{'servers':[{'address':'gateway.example.com','port':1080}]}}
+        old['outbounds'].append(extra)
+        migrated = m.migration_template(old, s)
+        m.validate_routes(migrated)
+        self.assertIn(extra, migrated['outbounds'])
+        self.assertEqual(migrated['outbounds'][0]['tag'], 'server-out')
+        self.assertEqual(migrated['outbounds'][2]['settings']['servers'][0]['address'], s['socks_ip'])
+        self.assertEqual(old['outbounds'][0]['tag'], 'blocked')
+
+    def test_reality_accepts_existing_v2rayn_core(self):
+        item = m.inbound(state(), state()['nodes'][0])
+        self.assertEqual(json.loads(item['streamSettings'])['realitySettings']['minClientVer'], '1.8.0')
+
+    def test_udp_protocol_failure_is_optional(self):
+        with patch.object(m.socket, 'create_connection', side_effect=OSError('unsupported')):
+            self.assertFalse(m.udp_probe('socks5h://127.0.0.1:10080'))
+
+    def test_counter_failure_does_not_fail_deployment_and_reuses_event(self):
+        s = state()
+        with patch.object(m, 'save'), patch.object(m.http.client, 'HTTPSConnection', side_effect=OSError('offline')):
+            m.completion(s)
+            event = s['counter_event']
+            m.completion(s)
+        self.assertEqual(s['counter_event'], event)
+        self.assertEqual(len(event), 36)
+
+    def test_rollback_restores_template_and_both_inbounds(self):
+        s = state()
+        record = {'pending':True, 'state':s, 'template':m.template(s),
+                  'inbounds':[dict(m.inbound(s,n),id=i+1) for i,n in enumerate(s['nodes'])]}
+        with tempfile.TemporaryDirectory() as td, patch.object(m,'ROOT',Path(td)), \
+             patch.object(m,'STATE',Path(td)/'state.json'), patch.object(m,'wait_panel') as wait, \
+             patch.object(m,'update_template') as update, patch.object(m,'restart') as restart, \
+             patch.object(m,'run'):
+            m.save(Path(td)/'migration-backup.json',record)
+            m.rollback_migration(s)
+            update.assert_called_once_with(wait.return_value,record['template'])
+            self.assertEqual(wait.return_value.request.call_count,2)
+            restart.assert_called_once_with(s,True)
+            self.assertFalse(json.loads((Path(td)/'migration-backup.json').read_text())['pending'])
+
+    def test_udp_fallback_is_rejected_and_template_restored(self):
+        s = state()
+        @contextlib.contextmanager
+        def fake_client(_): yield ['server','home']
+        with patch.object(m,'wait_panel'), patch.object(m,'get_template',return_value=m.template(s)), \
+             patch.object(m,'client',fake_client), patch.object(m,'run'), patch.object(m,'restart'), \
+             patch.object(m,'fetch_ip',side_effect=['8.8.8.8','9.9.9.9','9.9.9.9','8.8.8.8',RuntimeError('offline')]), \
+             patch.object(m,'udp_probe',side_effect=[True,True]), patch.object(m,'update_template') as update:
+            with self.assertRaisesRegex(RuntimeError,'UDP 仍成功'):
+                m.selftest(s,failure=True)
+        self.assertEqual(update.call_count,2)
+        self.assertEqual(update.call_args.args[1],m.template(s))
 
     def test_secrets_are_written_private(self):
         with tempfile.TemporaryDirectory() as td:
