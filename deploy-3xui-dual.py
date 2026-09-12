@@ -2,7 +2,6 @@
 """Fresh Ubuntu/Debian deployment; embedded in deploy-3xui-dual.sh."""
 import argparse
 import base64
-import html
 import contextlib
 import copy
 import fcntl
@@ -813,28 +812,13 @@ def copy_result(s, choice):
         say(values[choice-1][1]); return
     value = base64.b64encode(values[choice-1][1].encode()).decode()
     sys.stdout.write('\033]52;c;' + value + '\a');sys.stdout.flush()
-    say('已向终端发送复制请求，请粘贴检查。若终端不支持，请使用结果网页中的复制按钮。')
+    say('已向终端发送复制请求，请粘贴检查。若终端不支持，请直接选中终端中的结果复制。')
 
 
 def write_results(s):
-    values = copy_values(s)
-    cards = []
-    for i,(label,value) in enumerate(values):
-        if i == 2: continue
-        content = html.escape(value)
-        cards.append(f'<section><h2>{html.escape(label)}</h2><textarea id="v{i}" readonly>{content}</textarea><button data-copy="v{i}">复制{html.escape(label)}</button></section>')
-    # Entirely offline. Values are escaped as text; no credentials in URLs or scripts.
-    page = '''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>3X-UI 一键中转住宅 IP</title>
-<style>body{font:17px/1.6 system-ui;margin:0;background:#111827;color:#eef2ff}main{max-width:860px;margin:40px auto;padding:20px}h1{font-size:32px}h2{font-size:19px}section{background:#1e293b;padding:20px;margin:18px 0;border-radius:12px}textarea{box-sizing:border-box;width:100%;min-height:90px;background:#111827;color:#eef2ff;border:1px solid #64748b;border-radius:6px;padding:12px;font:14px/1.5 monospace;resize:vertical}button,a{font:inherit}button{background:#93c5fd;color:#111827;border:0;border-radius:7px;padding:8px 16px;cursor:pointer;margin-top:10px}a{color:#93c5fd}#notice{position:sticky;top:0;background:#111827;padding:8px}</style>
-<main><h1>Didushan</h1><p>3X-UI 一键中转住宅 IP</p><p>点击对应按钮即可复制。这份文件包含你的账号和节点信息，请自己保存。</p><p id="notice" role="status" aria-live="polite"></p>'''
-    page += '<button data-copy="panel-all">复制全部面板信息</button><textarea id="panel-all" hidden>' + html.escape(values[2][1]) + '</textarea>'
-    page += ''.join(cards)
-    page += '''<p><a href="https://www.youtube.com/@Didushan" target="_blank" rel="noopener noreferrer">作者 YouTube 频道</a> · <a href="https://t.me/didushan9" target="_blank" rel="noopener noreferrer">电报联系</a></p></main>
-<script>document.querySelectorAll('[data-copy]').forEach(button=>button.addEventListener('click',async()=>{const source=document.getElementById(button.dataset.copy);let ok=false;try{await navigator.clipboard.writeText(source.value);ok=true}catch{const temp=document.createElement('textarea');temp.value=source.value;document.body.appendChild(temp);temp.select();ok=document.execCommand('copy');temp.remove()}document.getElementById('notice').textContent=ok?'已复制，可以粘贴了。':'浏览器未允许复制，请在文本框中全选复制。'}));</script></html>'''
-    save(ROOT / '结果.html', page)
     save(ROOT / '登录信息与两个节点.txt', credentials(s))
-    say('结果已保存：/root/3xui-dual/结果.html（用 SSH 工具下载，双击打开即可点击复制）')
-    say('终端复制菜单：python3 /root/3xui-dual/manager.py --copy')
+    (ROOT / '结果.html').unlink(missing_ok=True)
+    say('登录信息和节点链接已备份：/root/3xui-dual/登录信息与两个节点.txt')
 
 
 def recv_exact(sock, size):
@@ -1003,7 +987,7 @@ def main():
     parser.add_argument('--check', action='store_true', help='只检查本脚本部署；不注入故障')
     parser.add_argument('--migrate', action='store_true', help='升级本脚本已完成的部署，保留面板及节点凭据')
     parser.add_argument('--rollback-migration', action='store_true', help='恢复中断迁移的配置备份')
-    parser.add_argument('--results', action='store_true', help='重新生成结果网页，不改节点')
+    parser.add_argument('--results', action='store_true', help='重新显示登录信息和节点，不改配置')
     parser.add_argument('--stats', action='store_true', help='重新同步运行次数')
     parser.add_argument('--copy', type=int, nargs='?', const=0, choices=range(7), help='复制菜单；可直接指定 1-6')
     args = parser.parse_args()
@@ -1040,6 +1024,7 @@ def main():
             else:
                 save(ROOT / 'manager.py', Path(__file__).read_text())
                 completion(s)
+                say(credentials(s))
                 write_results(s)
             return
         if args.rollback_migration:

@@ -29,17 +29,15 @@ class OutputTests(unittest.TestCase):
             with self.subTest(response=response), patch.object(m,'save'), patch.object(m.subprocess,'run',return_value=subprocess.CompletedProcess([],0,response,'')):
                 s=state();m.completion(s);self.assertIn('counter_error',s)
 
-    def test_result_escapes_values_and_has_private_permissions(self):
-        s=state();s['password']='</textarea><script>alert(1)</script>&"'
+    def test_result_keeps_text_backup_and_removes_old_html(self):
+        s=state()
         with tempfile.TemporaryDirectory() as td, patch.object(m,'ROOT',Path(td)):
+            (Path(td)/'结果.html').write_text('obsolete')
             m.write_results(s)
-            p=Path(td)/'结果.html'; content=p.read_text()
-            self.assertNotIn(s['password'],content)
-            self.assertIn('&lt;/textarea&gt;',content)
-            self.assertEqual(content.count('data-copy='),6)
-            self.assertNotIn('<script src=',content)
+            p=Path(td)/'登录信息与两个节点.txt'
+            self.assertEqual(p.read_text(),m.credentials(s))
+            self.assertFalse((Path(td)/'结果.html').exists())
             self.assertEqual(p.stat().st_mode & 0o777,0o600)
-            self.assertEqual(m.copy_values(s)[5][1],s['password'])
 
     def test_terminal_copy_encodes_exact_value(self):
         s=state(); out=io.StringIO()
