@@ -235,15 +235,6 @@ class DeploymentTests(unittest.TestCase):
         with patch.object(m.socket, 'create_connection', side_effect=OSError('unsupported')):
             self.assertFalse(m.udp_probe('socks5h://127.0.0.1:10080'))
 
-    def test_counter_failure_does_not_fail_deployment_and_reuses_event(self):
-        s = state()
-        with patch.object(m, 'save'), patch.object(m.subprocess, 'run', side_effect=OSError('offline')):
-            m.completion(s)
-            event = s['counter_event']
-            m.completion(s)
-        self.assertEqual(s['counter_event'], event)
-        self.assertEqual(len(event), 36)
-
     def test_rollback_restores_template_and_both_inbounds(self):
         s = state()
         record = {'pending':True, 'state':s, 'template':m.template(s),

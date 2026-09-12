@@ -72,8 +72,7 @@ curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main
 - 住宅代理只支持 TCP 时，TCP 可以正常用；支持 UDP 且网络畅通时，UDP 也走住宅代理。住宅代理故障时，这个节点不会自动改用服务器 IP。
 - 面板里新增的普通入站默认走服务器。新增住宅代理时，需要把对应入站绑定到住宅出站，参照现有住宅节点即可。
 - 客户端请关闭 Mux。使用住宅节点时，让需要代理的应用和 DNS 都走代理，避免客户端自己的直连规则绕过节点。
-- 累计次数统计所有用户成功安装或迁移的上报，同一次完成重复上报不会多计。不上传账号或节点信息；统计服务暂时连不上也不影响使用。
 
-安装失败、旧版本更新、查看日志或重试统计，请看[维护与排查](docs/维护说明.md)。
+安装失败、旧版本更新、查看日志，请看[维护与排查](docs/维护说明.md)。
 
 作者 **Didushan** · [YouTube 频道](https://www.youtube.com/@Didushan) · [电报联系](https://t.me/didushan9)

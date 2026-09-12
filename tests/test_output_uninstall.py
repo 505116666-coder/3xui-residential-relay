@@ -13,31 +13,39 @@ from test_deploy import m, state
 
 
 class OutputTests(unittest.TestCase):
-    def test_counter_success_posts_only_event_and_reuses_it(self):
-        s = state()
-        reply = subprocess.CompletedProcess([], 0, '{"count":7}', '')
-        with patch.object(m, 'save'), patch.object(m.subprocess, 'run', return_value=reply) as call:
-            m.completion(s)
-            event = s['counter_event']
-            m.completion(s)
-        self.assertEqual(s['last_global_count'], 7)
-        self.assertEqual(json.loads(call.call_args.kwargs['input']), {'event_id':event})
-        self.assertNotIn('--insecure', call.call_args.args[0])
+    def test_completion_is_offline_and_preserves_author_links(self):
+        out = io.StringIO()
+        with patch.object(m.sys, 'stdout', out), patch.object(m.subprocess, 'run') as run, patch.object(m, 'save') as save:
+            m.completion(state())
+        run.assert_not_called()
+        save.assert_not_called()
+        self.assertIn('https://www.youtube.com/@Didushan', out.getvalue())
+        self.assertIn('https://t.me/didushan9', out.getvalue())
+        self.assertNotIn('统计', out.getvalue())
 
-    def test_counter_bad_response_never_blocks_results(self):
-        for response in ['[]', 'null', '{"count":true}', '{"count":-1}', 'bad json']:
-            with self.subTest(response=response), patch.object(m,'save'), patch.object(m.subprocess,'run',return_value=subprocess.CompletedProcess([],0,response,'')):
-                s=state();m.completion(s);self.assertIn('counter_error',s)
+    def test_banner_fills_terminal_without_wrapping(self):
+        import unicodedata
+        for columns in (10, 20, 40, 80, 120, 200):
+            out = io.StringIO()
+            with patch.object(m.sys, 'stdout', out), patch.object(m.shutil, 'get_terminal_size', return_value=os.terminal_size((columns, 24))):
+                m.banner()
+            lines = out.getvalue().splitlines()
+            widths = [sum(2 if unicodedata.east_asian_width(c) in ('F', 'W') else 1 for c in line) for line in lines]
+            self.assertTrue(all(w < columns for w in widths))
+            title = lines[3]
+            self.assertEqual(widths[3], columns - 1)
+            self.assertEqual(unicodedata.normalize('NFKC', title).replace(' ', ''), 'Didushan')
 
     def test_result_keeps_text_backup_and_removes_old_html(self):
         s=state()
-        with tempfile.TemporaryDirectory() as td, patch.object(m,'ROOT',Path(td)):
+        with tempfile.TemporaryDirectory() as td, patch.object(m,'ROOT',Path(td)), patch.object(m, 'say') as say:
             (Path(td)/'结果.html').write_text('obsolete')
             m.write_results(s)
             p=Path(td)/'登录信息与两个节点.txt'
             self.assertEqual(p.read_text(),m.credentials(s))
             self.assertFalse((Path(td)/'结果.html').exists())
             self.assertEqual(p.stat().st_mode & 0o777,0o600)
+            say.assert_not_called()
 
     def test_terminal_copy_encodes_exact_value(self):
         s=state(); out=io.StringIO()

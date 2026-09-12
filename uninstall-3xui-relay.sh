@@ -52,4 +52,4 @@ rm -f -- /root/deploy-3xui-dual.sh /root/3xui-residential-relay.sh
 find /tmp -maxdepth 1 -type f -user root -name '3xui-dual.????????.py' -delete
 rm -f -- /root/uninstall-3xui-relay.sh
 printf '\n卸载完成。原面板账号和节点链接已失效，可以重新安装。\n'
-echo '系统公共依赖及原有防火墙规则保留；全局累计次数不会归零。'
+echo '系统公共依赖及原有防火墙规则保留。'

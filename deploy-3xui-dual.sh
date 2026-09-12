@@ -770,12 +770,8 @@ WantedBy=multi-user.target
     save(ROOT / '登录信息与两个节点.txt', credentials(s))
     say('\n安装完成，服务器自检通过。面板已开启 HTTPS，并设置自动续期。')
     say(credentials(s))
-    say(f'结果已保存：{ROOT}/登录信息与两个节点.txt')
     completion(s)
     write_results(s)
-
-
-COUNTER_URL = 'https://didushan-script-counter.cooperk717.chatgpt.site/api/runs'
 
 
 def terminal_link(label, url):
@@ -785,39 +781,30 @@ def terminal_link(label, url):
 
 
 def banner():
-    # Full-width text stays readable without relying on the terminal's font size.
-    say('\n' + '━' * 36)
-    say('       Ｄｉｄｕｓｈａｎ')
-    say('     3X-UI 一键中转住宅 IP')
-    say('━' * 36 + '\n')
+    # Reserve the final column to avoid terminal auto-wrap. Full-width letters
+    # keep the actual name readable; distribute spare columns across its gaps.
+    width = max(1, shutil.get_terminal_size(fallback=(80, 24)).columns - 1)
+    name = 'Ｄｉｄｕｓｈａｎ' if width >= 16 else 'Didushan'
+    cells = 16 if width >= 16 else 8
+    if width >= cells:
+        gap, extra = divmod(width - cells, len(name) - 1)
+        title = ''.join(char + (' ' * (gap + (i < extra)) if i < len(name) - 1 else '')
+                        for i, char in enumerate(name))
+    else:
+        title = name[:width]
+    if sys.stdout.isatty() and os.environ.get('TERM') != 'dumb':
+        title = '\033[1;96m' + title + '\033[0m'
+    say('\n' + '━' * width)
+    say('')
+    say(title)
+    say('')
+    subtitle = '3X-UI 一键中转住宅 IP'
+    if width >= 21:
+        say(' ' * ((width - 21) // 2) + subtitle)
+    say('━' * width + '\n')
 
 
 def completion(s):
-    s.setdefault('counter_event', str(uuid.uuid4()))
-    save(STATE, s)
-    request = json.dumps({'event_id': s['counter_event']})
-    try:
-        response = subprocess.run(['curl', '-4', '--silent', '--show-error', '--fail',
-            '--proto', '=https', '--connect-timeout', '4', '--max-time', '8',
-            '--retry', '1', '--retry-delay', '1', '-A', 'Didushan-Relay/1',
-            '-H', 'Content-Type: application/json', '--data-binary', '@-', COUNTER_URL],
-            input=request, text=True, capture_output=True, timeout=22)
-        if response.returncode:
-            reasons = {6:'统计网址解析失败',7:'无法连接统计服务',22:'统计服务拒绝请求',28:'连接超时',35:'HTTPS 握手失败',60:'证书校验失败'}
-            raise ValueError(reasons.get(response.returncode, f'网络请求失败（curl {response.returncode}）'))
-        data = json.loads(response.stdout)
-        if not isinstance(data, dict) or type(data.get('count')) is not int or data['count'] < 0:
-            raise ValueError('统计服务返回格式不正确')
-        s['last_global_count'] = data['count']
-        s.pop('counter_error', None)
-        say(f"累计成功运行：{data['count']} 次（统计启用后）")
-    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
-        reason = str(exc) if isinstance(exc, ValueError) and not isinstance(exc, json.JSONDecodeError) else '统计请求未完成'
-        s['counter_error'] = reason
-        save(ROOT / 'counter-status.json', {'error': reason, 'time': time.strftime('%Y-%m-%d %H:%M:%S')})
-        say(f'本次安装已完成；次数暂未同步：{reason}。')
-        say('稍后重试：python3 /root/3xui-dual/manager.py --stats')
-    save(STATE, s)
     say(terminal_link('作者 YouTube 频道', 'https://www.youtube.com/@Didushan') + '  |  ' + terminal_link('电报联系', 'https://t.me/didushan9'))
 
 
@@ -848,7 +835,6 @@ def copy_result(s, choice):
 def write_results(s):
     save(ROOT / '登录信息与两个节点.txt', credentials(s))
     (ROOT / '结果.html').unlink(missing_ok=True)
-    say('登录信息和节点链接已备份：/root/3xui-dual/登录信息与两个节点.txt')
 
 
 def recv_exact(sock, size):
@@ -983,7 +969,6 @@ def migrate(s):
     run(['systemctl', 'disable', '--now', '3xui-dual-socks-bridge'], check=False)
     run(['systemctl', 'daemon-reload'])
     s['schema_version'] = 2
-    s['counter_event'] = str(uuid.uuid4())
     save(STATE, s)
     save(ROOT / 'routing-recovery.json', desired)
     shutil.copyfile(Path(__file__), ROOT / 'manager.py') if Path(__file__).resolve() != ROOT / 'manager.py' else None
@@ -1018,11 +1003,10 @@ def main():
     parser.add_argument('--migrate', action='store_true', help='升级本脚本已完成的部署，保留面板及节点凭据')
     parser.add_argument('--rollback-migration', action='store_true', help='恢复中断迁移的配置备份')
     parser.add_argument('--results', action='store_true', help='重新显示登录信息和节点，不改配置')
-    parser.add_argument('--stats', action='store_true', help='重新同步运行次数')
     parser.add_argument('--copy', type=int, nargs='?', const=0, choices=range(7), help='复制菜单；可直接指定 1-6')
     args = parser.parse_args()
     banner()
-    if sum((args.resume, args.check, args.migrate, args.rollback_migration, args.results, args.stats, args.copy is not None)) > 1:
+    if sum((args.resume, args.check, args.migrate, args.rollback_migration, args.results, args.copy is not None)) > 1:
         parser.error('一次只能选择一种操作。')
     os.umask(0o077)
     arch = check_os()
@@ -1040,17 +1024,16 @@ def main():
     owned_empty = (ROOT / 'owner').is_file() and (ROOT / 'owner').read_text() == '3xui-dual-v1'
     if args.resume and not STATE.exists() and owned_empty and not APP.exists() and not Path('/etc/x-ui').exists():
         args.resume = False  # Earlier interruption during dependency installation / input wizard.
-    if args.resume or args.check or args.migrate or args.rollback_migration or args.results or args.stats or args.copy is not None:
+    if args.resume or args.check or args.migrate or args.rollback_migration or args.results or args.copy is not None:
         s = json.loads(STATE.read_text())
         if s.get('managed_by') != '3xui-dual-v1' or s['arch'] != arch:
             raise RuntimeError('不属于本脚本管理的部署。')
         # Keep the legacy state key for --resume compatibility; its value may now be a hostname.
         s['socks_ip'] = socks_host(s['socks_ip'])
-        if args.results or args.stats or args.copy is not None:
+        if args.results or args.copy is not None:
             if not s.get('complete'):
                 raise RuntimeError('请先完成安装，再查看结果。')
-            if args.stats: completion(s)
-            elif args.copy is not None: copy_result(s, args.copy)
+            if args.copy is not None: copy_result(s, args.copy)
             else:
                 save(ROOT / 'manager.py', Path(__file__).read_text())
                 completion(s)
