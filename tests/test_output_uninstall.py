@@ -25,16 +25,27 @@ class OutputTests(unittest.TestCase):
 
     def test_banner_fills_terminal_without_wrapping(self):
         import unicodedata
-        for columns in (10, 20, 40, 80, 120, 200):
+        for columns in (10, 20, 24, 40, 48, 80, 120, 200):
             out = io.StringIO()
             with patch.object(m.sys, 'stdout', out), patch.object(m.shutil, 'get_terminal_size', return_value=os.terminal_size((columns, 24))):
                 m.banner()
             lines = out.getvalue().splitlines()
             widths = [sum(2 if unicodedata.east_asian_width(c) in ('F', 'W') else 1 for c in line) for line in lines]
             self.assertTrue(all(w < columns for w in widths))
-            title = lines[3]
-            self.assertEqual(widths[3], columns - 1)
-            self.assertEqual(unicodedata.normalize('NFKC', title).replace(' ', ''), 'Didushan')
+            block_lines = [line for line in lines if '█' in line]
+            if columns >= 24:
+                self.assertEqual(len(block_lines), 7 if columns >= 48 else 14)
+                self.assertEqual(max(map(len, block_lines)), columns - 1)
+            else:
+                self.assertIn('Didushan', out.getvalue())
+
+    def test_banner_uses_blue_cyan_only_in_supported_terminal(self):
+        for terminal, expected in [('xterm-256color', True), ('dumb', False)]:
+            out = io.StringIO()
+            with patch.object(m.sys, 'stdout', out), patch.object(out, 'isatty', return_value=True), patch.dict(os.environ, TERM=terminal):
+                m.banner()
+            self.assertEqual('\033[38;5;33m' in out.getvalue(), expected)
+            self.assertEqual('\033[38;5;51m' in out.getvalue(), expected)
 
     def test_result_keeps_text_backup_and_removes_old_html(self):
         s=state()

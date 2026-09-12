@@ -780,28 +780,47 @@ def terminal_link(label, url):
     return f'{label}：{url}'
 
 
+# Seven-row terminal lettering; each lit cell is a solid block, not an image.
+BANNER_FONT = {
+    'D': ('11110', '10001', '10001', '10001', '10001', '10001', '11110'),
+    'I': ('11111', '00100', '00100', '00100', '00100', '00100', '11111'),
+    'U': ('10001', '10001', '10001', '10001', '10001', '10001', '01110'),
+    'S': ('01111', '10000', '10000', '01110', '00001', '00001', '11110'),
+    'H': ('10001', '10001', '10001', '11111', '10001', '10001', '10001'),
+    'A': ('01110', '10001', '10001', '11111', '10001', '10001', '10001'),
+    'N': ('10001', '11001', '11001', '10101', '10011', '10011', '10001'),
+}
+
+
 def banner():
-    # Reserve the final column to avoid terminal auto-wrap. Full-width letters
-    # keep the actual name readable; distribute spare columns across its gaps.
+    # Reserve the last column to prevent automatic wrapping in SSH terminals.
     width = max(1, shutil.get_terminal_size(fallback=(80, 24)).columns - 1)
-    name = 'Ｄｉｄｕｓｈａｎ' if width >= 16 else 'Didushan'
-    cells = 16 if width >= 16 else 8
-    if width >= cells:
-        gap, extra = divmod(width - cells, len(name) - 1)
-        title = ''.join(char + (' ' * (gap + (i < extra)) if i < len(name) - 1 else '')
-                        for i, char in enumerate(name))
+    color = sys.stdout.isatty() and os.environ.get('TERM') != 'dumb'
+    colors = (33, 39, 45, 51, 45, 39, 33)
+    say('')
+    if width >= 47:
+        words = ('DIDUSHAN',)
+    elif width >= 23:
+        words = ('DIDU', 'SHAN')
     else:
-        title = name[:width]
-    if sys.stdout.isatty() and os.environ.get('TERM') != 'dumb':
-        title = '\033[1;96m' + title + '\033[0m'
-    say('\n' + '━' * width)
-    say('')
-    say(title)
-    say('')
+        words = ()
+        say('Didushan'[:width])
+    for word in words:
+        for row in range(7):
+            pixels = '0'.join(BANNER_FONT[letter][row] for letter in word)
+            # Distribute extra columns across glyph strokes as well as gaps,
+            # enlarging the letters themselves instead of only their spacing.
+            line = ''.join(('█' if pixel == '1' else ' ') *
+                           (((i + 1) * width // len(pixels)) - (i * width // len(pixels)))
+                           for i, pixel in enumerate(pixels)).rstrip()
+            if color:
+                line = f'\033[38;5;{colors[row]}m' + line + '\033[0m'
+            say(line)
+        say('')
     subtitle = '3X-UI 一键中转住宅 IP'
     if width >= 21:
         say(' ' * ((width - 21) // 2) + subtitle)
-    say('━' * width + '\n')
+    say('')
 
 
 def completion(s):
