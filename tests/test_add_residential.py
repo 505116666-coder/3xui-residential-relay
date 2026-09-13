@@ -33,6 +33,10 @@ class Panel:
             self.entries.append(dict(copy.deepcopy(data),id=max(e['id'] for e in self.entries)+1))
             if self.fail_add_reply:raise OSError('response lost after server applied add')
             return self.entries[-1]
+        if '/setEnable/' in path:
+            if set(data) != {'enable'}:raise AssertionError('Only enable is accepted')
+            entry=next(e for e in self.entries if e['id']==int(path.rsplit('/',1)[1]))
+            entry['enable']=data['enable'];return
         if '/update/' in path:
             self.entries=[copy.deepcopy(data) if e['id']==data['id'] else e for e in self.entries];return
         if '/del/' in path:
@@ -92,7 +96,7 @@ class AddResidentialTests(unittest.TestCase):
         add=next(data for path,data in calls if path.endswith('/add'))
         self.assertFalse(add['enable'])
         route_index=next(i for i,(path,_) in enumerate(calls) if path=='panel/api/xray/update')
-        enable_index=next(i for i,(path,_) in enumerate(calls) if '/inbounds/update/' in path)
+        enable_index=next(i for i,(path,_) in enumerate(calls) if '/inbounds/setEnable/' in path)
         self.assertLess(route_index,enable_index)
     def test_route_preserves_custom_rules_and_existing_extensions(self):
         cfg=m.template(self.s)
@@ -203,3 +207,37 @@ class AddResidentialTests(unittest.TestCase):
     def test_object_fields_roll_back_after_node_failure(self):
         self.panel.object_fields=True
         self.test_node_failure_rolls_back()
+
+    def test_enable_does_not_roundtrip_readonly_list_fields(self):
+        request=self.panel.request
+        def with_stats(path,data=None):
+            value=request(path,data)
+            if path=='panel/api/inbounds/list':
+                for entry in value:
+                    entry['clientStats']=[{'id':1,'email':'test','enable':True,'up':0,'down':0}]
+                    entry['up']=999
+            return value
+        self.panel.request=with_stats
+        self.apply()
+        toggles=[(path,data) for path,data in self.panel.calls if '/setEnable/' in path]
+        self.assertEqual(len(toggles),1)
+        self.assertEqual(toggles[0][1],{'enable':True})
+        self.assertFalse(any('/inbounds/update/' in path for path,_ in self.panel.calls))
+
+    def test_enable_rejection_restores_previous_configuration(self):
+        request=self.panel.request
+        def reject(path,data=None):
+            if '/setEnable/' in path:raise RuntimeError('enable rejected')
+            return request(path,data)
+        self.panel.request=reject
+        with self.assertRaisesRegex(RuntimeError,'enable rejected'):self.apply()
+        self.assert_original()
+
+    def test_success_response_without_enabling_is_not_accepted(self):
+        request=self.panel.request
+        def ignored(path,data=None):
+            if '/setEnable/' in path:return
+            return request(path,data)
+        self.panel.request=ignored
+        with self.assertRaisesRegex(RuntimeError,'未正确启用'):self.apply()
+        self.assert_original()

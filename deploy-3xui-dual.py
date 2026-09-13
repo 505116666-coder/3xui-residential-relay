@@ -298,6 +298,8 @@ class API:
         conn.connect()
         if self.tls:
             conn.sock = ssl.create_default_context().wrap_socket(conn.sock, server_hostname=self.s['ip'])
+        if data is not None and path.startswith('panel/api/inbounds/update/'):
+            data = {k: v for k, v in data.items() if k != 'clientStats'}
         body = api_form(data) if data is not None else None
         headers = {'Host': f"{self.s['ip']}:{self.s['panel_port']}",
                    'Cookie': '; '.join(f'{k}={v}' for k, v in self.cookies.items())}
@@ -1099,8 +1101,14 @@ def apply_residential_add(s, node, proxy, original, api):
             raise RuntimeError('新增住宅路由未正确保存。')
         # Load the route before enabling the inlet, so it can never use default direct.
         api = restart(s, True)
-        entry['enable'] = True
-        api.request('panel/api/inbounds/update/' + str(entry['id']), entry)
+        # The list response includes read-only statistics. Use the dedicated
+        # endpoint rather than round-tripping that response through update's form binder.
+        api.request('panel/api/inbounds/setEnable/' + str(entry['id']), {'enable': True})
+        enabled = [e for e in api.request('panel/api/inbounds/list') if e.get('tag') == node['tag']]
+        expected = copy.deepcopy(entry)
+        expected['enable'] = True
+        if len(enabled) != 1 or inbound_snapshot(enabled) != inbound_snapshot([expected]):
+            raise RuntimeError('新增入站未正确启用，或节点参数被改变。')
         probe_state = added_node_state(s, node)
         api = restart(probe_state, True)
         run([xray_bin(s), 'run', '-test', '-c', APP / 'bin/config.json'], cwd=APP / 'bin')

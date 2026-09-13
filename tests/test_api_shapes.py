@@ -13,7 +13,7 @@ class APIShapeTests(unittest.TestCase):
         entry=m.inbound(s,s['nodes'][1])
         for key in ('settings','streamSettings','sniffing'):
             entry[key]=json.loads(entry[key])
-        entry.update(id=3,nodeId=None,enable=True)
+        entry.update(id=3,nodeId=None,enable=True,clientStats=[{'id':1,'email':'test','enable':True}])
         before=copy.deepcopy(entry)
         conn=Mock();response=conn.getresponse.return_value
         response.status=200;response.getheaders.return_value=[]
@@ -27,6 +27,7 @@ class APIShapeTests(unittest.TestCase):
         for key in ('settings','streamSettings','sniffing'):
             self.assertEqual(json.loads(form[key][0]),entry[key])
         self.assertNotIn('nodeId',form)
+        self.assertNotIn('clientStats',form)
         self.assertEqual(entry,before)
 
     def test_legacy_json_text_is_not_double_encoded(self):
