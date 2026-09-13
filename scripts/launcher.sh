@@ -3,11 +3,11 @@
 set -euo pipefail
 umask 077
 if [[ "${1:-}" == "--version" ]]; then
-  echo 'relay 1.1.0 / 3X-UI v3.7.0'
+  echo 'relay 1.1.1 / 3X-UI v3.7.0'
   exit 0
 fi
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  echo '用法：bash deploy-3xui-dual.sh [--resume | --check | --results | --copy [序号] | --add-residential | --rollback-add | --migrate | --rollback-migration | --menu | --edit-residential | --rename-residential | --delete-residential | --rollback-change | --diagnostics | --version]'
+  echo '用法：bash 3xui-residential-relay.sh [--resume | --check | --results | --copy [序号] | --add-residential | --rollback-add | --migrate | --rollback-migration | --menu | --edit-residential | --rename-residential | --delete-residential | --rollback-change | --diagnostics | --version]'
   echo '仅适用于全新 Ubuntu 22.04+ / Debian 12+ 的 systemd 服务器。'
   exit 0
 fi

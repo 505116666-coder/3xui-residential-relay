@@ -28,7 +28,7 @@ import time
 import urllib.parse
 import uuid
 
-SCRIPT_VERSION = '1.1.0'
+SCRIPT_VERSION = '1.1.1'
 VERSION = 'v3.7.0'
 ACME_COMMIT = '181425b3c8373ca23c0664948b97edf5ed84e9c5'
 DIGESTS = {
@@ -36,6 +36,9 @@ DIGESTS = {
     'arm64': '3caf1db1e8b10bb1fa1324c945522690bcf01c533ee75b377268f1c01a3ce896',
 }
 ROOT = Path('/root/3xui-dual')
+SHORTCUT = Path('/usr/local/bin/relay')
+SHORTCUT_MARKER = '# Managed by 3xui-residential-relay'
+SHORTCUT_TEXT = '#!/bin/sh\n' + SHORTCUT_MARKER + '\nif [ "$#" -eq 0 ]; then set -- --menu; fi\nexec python3 /root/3xui-dual/manager.py "$@"\n'
 APP = Path('/usr/local/x-ui')
 CERT = ROOT / 'cert'
 ACME = ROOT / 'acme'
@@ -59,6 +62,17 @@ def save(path, value):
     tmp.write_text(text, encoding='utf-8')
     tmp.chmod(0o600)
     tmp.replace(path)
+
+
+def install_shortcut():
+    if SHORTCUT.is_symlink() or (SHORTCUT.exists() and
+            (not SHORTCUT.is_file() or SHORTCUT_MARKER not in SHORTCUT.read_text(errors='replace').splitlines())):
+        say('relay 命令已被其他程序占用，保留原命令；可用 bash /root/3xui-residential-relay.sh --menu。')
+        return False
+    save(SHORTCUT, SHORTCUT_TEXT)
+    SHORTCUT.chmod(0o700)
+    say('下次输入 relay 即可打开管理菜单。')
+    return True
 
 
 def run(args, *, input=None, timeout=180, check=True, cwd=None):
@@ -770,6 +784,7 @@ WantedBy=multi-user.target
     run(['systemctl', 'start', '3xui-dual-renew.service'], timeout=650)
     s['complete'] = True
     save(STATE, s)
+    install_shortcut()
     save(ROOT / '登录信息与两个节点.txt', credentials(s))
     say('\n安装完成，服务器自检通过。面板已开启 HTTPS，并设置自动续期。')
     say(credentials(s))
@@ -1606,6 +1621,9 @@ def main():
         s = json.loads(STATE.read_text())
         if s.get('managed_by') != '3xui-dual-v1' or s['arch'] != arch:
             raise RuntimeError('不属于本脚本管理的部署。')
+        if s.get('complete') and (args.menu or args.results):
+            save(ROOT / 'manager.py', Path(__file__).read_text())
+            install_shortcut()
         if args.diagnostics:
             diagnostics(s)
             return

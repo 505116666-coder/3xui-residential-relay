@@ -124,3 +124,12 @@ class UninstallTests(unittest.TestCase):
         tool.write_text('#!/bin/bash\nif [[ "$1" == status ]]; then\n echo "23456/tcp ALLOW Anywhere # Didushan-3xui-relay"\n echo "34567/tcp ALLOW Anywhere"\nelse\n echo "$*" >> "'+str(log)+'"\nfi\n')
         result=self.run_script();self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual(log.read_text().strip(),'--force delete allow 23456/tcp')
+
+    def test_owned_shortcut_removed_and_unrelated_preserved(self):
+        command=self.base/'usr/local/bin/relay';command.parent.mkdir(parents=True,exist_ok=True)
+        command.write_text('#!/bin/sh\n# Managed by 3xui-residential-relay\n')
+        self.assertEqual(self.run_script().returncode,0)
+        self.assertFalse(command.exists())
+        command.write_text('other program\n')
+        self.assertEqual(self.run_script().returncode,0)
+        self.assertEqual(command.read_text(),'other program\n')

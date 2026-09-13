@@ -65,3 +65,5 @@
 曾尝试限时公钥连接，但服务器仅允许密码认证，未成功建立直连；临时公钥和本地私钥均已清理，未修改 sshd 配置。
 服务器结果：/root/3xui-dual/live-validation-result.json；过程日志：/root/3xui-dual/live-validation.log；脱敏诊断：/root/3xui-dual/diagnostics.json。
 本次验证针对已安装的实际面板和真实供应商链路；未在此服务器重新执行安装、卸载、迁移或重新申请证书，也未替代外部客户端的公网入口验收。未推送 GitHub。
+
+2026-09-13 命名与启动修正（1.1.1）：安装包名称统一为 3xui-residential-relay.sh，保留旧名兼容；安装/更新结果/菜单入口自动建立 relay 短命令，支持参数透传，未知同名程序和符号链接保留；卸载只移除归属标记匹配的命令。83 项 Python 回归通过。

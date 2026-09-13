@@ -46,7 +46,7 @@
 在**服务器的 SSH 终端**粘贴运行，按提示填写即可：
 
 ```bash
-curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main/deploy-3xui-dual.sh' -o /root/deploy-3xui-dual.sh && bash /root/deploy-3xui-dual.sh
+curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main/3xui-residential-relay.sh' -o /root/3xui-residential-relay.sh && bash /root/3xui-residential-relay.sh
 ```
 
 ## 三、原理阐述
@@ -76,7 +76,7 @@ curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main
 已经用本脚本安装成功后，每增加一个住宅代理，在服务器 SSH 中运行：
 
 ```bash
-curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main/deploy-3xui-dual.sh' -o /root/deploy-3xui-dual.sh && bash /root/deploy-3xui-dual.sh --add-residential
+curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main/3xui-residential-relay.sh' -o /root/3xui-residential-relay.sh && bash /root/3xui-residential-relay.sh --add-residential
 ```
 
 按提示填写新住宅代理的**地址、端口、用户名和密码**。节点名称可自定义，节点端口默认随机，也可自己指定。脚本会自动创建独立入站、住宅出站和对应路由，测试后给出新节点链接，无需进入面板配置。
@@ -86,13 +86,15 @@ curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main
 - 如果有云安全组或其他防火墙，按提示放行新节点的 **TCP 端口**，再导入客户端测试。
 - 添加失败会尝试自动撤回本次改动；中断后提示需要恢复时，参见[维护与排查](docs/维护说明.md)。
 
-## 日常管理（脚本 1.1.0）
+## 日常管理（脚本 1.1.1）
 
-已上传本版本脚本后，在服务器运行：
+安装完成后，在服务器输入：
 
 ```bash
-bash /root/deploy-3xui-dual.sh --menu
+relay
 ```
+
+旧服务器更新：重新运行上方下载命令并在末尾加 `--results`，即可更新管理器并安装短命令；保留现有节点。旧安装文件名仍可使用。
 
 菜单支持检查全部节点、替换住宅代理、重命名和删除追加节点，以及脱敏诊断和中断恢复。更换上游保留原节点链接。基础住宅节点支持替换，删除适用于后续追加节点。
 
