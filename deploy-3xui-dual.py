@@ -1142,12 +1142,30 @@ def apply_residential_add(s, node, proxy, original, api):
     s.update(updated)
     journal.unlink()
     write_results(s)
-    say('住宅 IP 添加成功。')
-    say(f"节点：{node['name']}；端口：{node['port']}；实测出口：{exit_ip}")
-    say('UDP 实测通过。' if udp_ok else 'UDP 暂未测通；TCP 已通过，UDP 仍绑定住宅代理。')
+    show_added_result(s, node, exit_ip, udp_ok)
+
+
+def show_added_result(s, node, exit_ip, udp_ok):
+    divider = '─' * max(1, min(64, shutil.get_terminal_size(fallback=(80, 24)).columns - 1))
+    say('\n' + divider)
+    say('  住宅 IP 添加成功')
+    say(divider + '\n')
+    say(f"  节点名称：{node['name']}")
+    say(f"  节点端口：{node['port']}")
+    say(f"  实测出口：{exit_ip}")
+    say('  TCP 检测：通过')
+    say('  UDP 检测：通过' if udp_ok else '  UDP 检测：暂未测通，仍绑定住宅代理')
+    say('\n' + divider)
+    say('  节点链接 · 复制下方完整链接，导入客户端')
+    say(divider + '\n')
     say(node_link(s, node))
-    say(f"请在云安全组或其他防火墙放行 TCP {node['port']}，导入客户端后测试。")
+    say('\n' + divider)
+    say('  使用提示\n')
+    say(f"  1. 在云安全组或其他防火墙放行 TCP {node['port']}。")
+    say('  2. 导入客户端后，连接新节点并确认出口 IP。')
+    say('\n' + divider + '\n')
     completion(s)
+    say('')
 
 
 def inbound_snapshot(entries):
