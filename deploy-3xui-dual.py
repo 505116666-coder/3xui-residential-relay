@@ -28,6 +28,7 @@ import time
 import urllib.parse
 import uuid
 
+SCRIPT_VERSION = '1.1.0'
 VERSION = 'v3.7.0'
 ACME_COMMIT = '181425b3c8373ca23c0664948b97edf5ed84e9c5'
 DIGESTS = {
@@ -234,7 +235,14 @@ def fetch_ip(proxy=None, auth=None, family4=False):
                     return str(ip)
             except ValueError:
                 pass
-    raise RuntimeError('出口检测失败：两个 HTTPS 检测地址均未返回公网 IP。检查网络、代理认证或供应商限制。')
+    reasons = {5: '代理域名无法解析，请检查代理地址和服务器 DNS。',
+               6: '检测域名无法解析，请检查服务器或住宅代理的 DNS。',
+               7: '无法建立连接，请检查地址、端口和防火墙。',
+               28: '连接超时，请检查线路、供应商状态及 IP 白名单。',
+               35: 'TLS 握手失败，请检查网络和服务器时间。',
+               60: 'HTTPS 证书校验失败，请检查服务器时间及 CA 证书。',
+               97: 'SOCKS 握手失败，请检查账号密码、IP 白名单及供应商限制。'}
+    raise RuntimeError('出口检测失败：' + reasons.get(p.returncode, '检测服务未返回公网 IP，请重试或检查出口网络。'))
 
 
 def available_ports(ports):
@@ -1182,6 +1190,7 @@ def inbound_snapshot(entries):
 
 
 def add_residential(s):
+    ensure_no_pending()
     if not s.get('complete'):
         raise RuntimeError('请先完成安装，再添加住宅 IP。')
     if (ROOT / 'pending-add.json').exists():
@@ -1236,8 +1245,332 @@ def add_residential(s):
     apply_residential_add(s, node, proxy, original, api)
 
 
+def managed_residential(s):
+    yield {'node': next(n for n in s['nodes'] if n['tag'] == HOME_TAG),
+           'proxy': {'host': s['socks_ip'], 'port': s['socks_port'],
+                     'username': s['socks_user'], 'password': s['socks_password']}}
+    yield from s.get('additional_residential', [])
+
+
+def check_node_route(config, item):
+    node, proxy = item['node'], item['proxy']
+    tag = 'residential-out' if node['tag'] == HOME_TAG else node['tag'] + '-out'
+    expected = {'type': 'field', 'inboundTag': [node['tag']], 'network': 'tcp,udp', 'outboundTag': tag}
+    rules = config['routing']['rules']
+    matching = [r for r in rules if node['tag'] in r.get('inboundTag', [])]
+    if matching != [expected]:
+        raise RuntimeError('住宅 TCP/UDP 路由绑定不一致，请核对该节点的入站标签。')
+    # Extra residential routes must precede any manually added broad rule.
+    index = rules.index(expected)
+    for earlier in rules[4:index]:
+        tags = earlier.get('inboundTag', [])
+        if len(tags) != 1 or not tags[0].startswith('dual-residential-'):
+            raise RuntimeError('住宅路由前存在自定义规则，请人工核对规则优先级。')
+    expected_out = {'tag': tag, 'protocol': 'socks', 'settings': {'servers': [{
+        'address': proxy['host'], 'port': proxy['port'],
+        'users': [{'user': proxy['username'], 'pass': proxy['password']}]}]}}
+    if [o for o in config['outbounds'] if o.get('tag') == tag] != [expected_out]:
+        raise RuntimeError('住宅出站与部署记录不一致，请核对上游地址和认证设置。')
+
+
+def check_all(s):
+    api = wait_panel(s, True)
+    config = get_template(api)
+    validate_routes(config)
+    entries = api.request('panel/api/inbounds/list')
+    direct = fetch_ip(family4=True)
+    items = [{'node': n} for n in s['nodes'] if n['tag'] == DIRECT_TAG] + list(managed_residential(s))
+    report = {'script_version': SCRIPT_VERSION, 'tested_at': time.strftime('%Y-%m-%d %H:%M:%S %z'),
+              'scope': 'server-local; public ingress requires an external client', 'nodes': []}
+    for item in items:
+        node = item['node']
+        result = {'name': node['name'], 'tag': node['tag'], 'port': node['port'], 'ok': False}
+        stage = '入站状态'
+        try:
+            matches = [e for e in entries if e.get('tag') == node['tag']]
+            if len(matches) != 1 or not matches[0].get('enable'):
+                raise RuntimeError('入站缺失或已停用，请在面板核对。')
+            if 'proxy' in item:
+                stage = '住宅路由与认证配置'
+                check_node_route(config, item)
+            stage = '协议连接与出口'
+            with client(added_node_state(s, node)) as proxies:
+                exit_ip = fetch_ip(proxies[0])
+                if (exit_ip == direct) != (node['tag'] == DIRECT_TAG):
+                    raise RuntimeError('出口与预期不符，请核对路由。')
+                result.update(ok=True, exit_ip=exit_ip,
+                              udp_test_passed=udp_probe(proxies[0]) if 'proxy' in item else None)
+            say(f"✓ {node['name']} | TCP 通过 | 出口 {exit_ip}" +
+                (' | UDP ' + ('通过' if result['udp_test_passed'] else '暂未测通') if 'proxy' in item else ''))
+        except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
+            # Never copy arbitrary server/network error strings into shareable reports.
+            result['ok'] = False
+            result['error'] = stage + '检查失败；核对该项配置，连接失败时检查代理认证、白名单和供应商连通性。'
+            say(f"✗ {node['name']} | {result['error']}")
+        report['nodes'].append(result)
+    report['https_ok'] = run(['openssl', 'x509', '-in', CERT / 'fullchain.pem', '-noout', '-checkend', '172800'], check=False).returncode == 0
+    report['renew_timer_ok'] = run(['systemctl', 'is-active', '--quiet', '3xui-dual-renew.timer'], check=False).returncode == 0
+    save(ROOT / 'check-all.json', report)
+    say('证书剩余至少 48 小时：' + ('通过' if report['https_ok'] else '失败，请检查 80 端口及续期日志。'))
+    say('续期定时器：' + ('正常' if report['renew_timer_ok'] else '未运行，请检查 3xui-dual-renew.timer。'))
+    say('以上为服务器本机测试；公网入口仍需电脑或手机验证。')
+    if not all(n['ok'] for n in report['nodes']) or not report['https_ok'] or not report['renew_timer_ok']:
+        raise RuntimeError('部分检查未通过；全部节点均已检查，见上方分项结果。')
+    return report
+
+
+def diagnostics(s):
+    # Allowlist only. Do not include state, URLs, names, tags, IPs, logs or exceptions.
+    report = {'script_version': SCRIPT_VERSION, 'panel_version': VERSION,
+              'architecture': s['arch'], 'complete': bool(s.get('complete')),
+              'residential_count': len(list(managed_residential(s))),
+              'pending_add': (ROOT / 'pending-add.json').exists(),
+              'pending_change': (ROOT / 'pending-change.json').exists()}
+    for unit in ('x-ui', '3xui-dual-renew.timer'):
+        report[unit + '_active'] = run(['systemctl', 'is-active', '--quiet', unit], check=False).returncode == 0
+    report['certificate_48h'] = run(['openssl', 'x509', '-in', CERT / 'fullchain.pem', '-noout', '-checkend', '172800'], check=False).returncode == 0
+    path = ROOT / 'diagnostics.json'
+    save(path, report)
+    say(json.dumps(report, ensure_ascii=False, indent=2))
+    say(f'脱敏诊断文件：{path}（不包含账号、IP、节点链接或原始日志）')
+    return report
+
+
+def entry_config(entry):
+    if entry is None:
+        return None
+    value = editable_entry(entry)
+    value.pop('id', None)
+    for key in ('settings', 'streamSettings', 'sniffing', 'allocate'):
+        if value.get(key) not in (None, ''):
+            value[key] = json_object(value[key], key)
+    return value
+
+
+def editable_entry(entry):
+    # Explicit form fields; exclude traffic counters and other read-only API output.
+    keys = ('id', 'remark', 'enable', 'listen', 'port', 'protocol', 'tag', 'total',
+            'expiryTime', 'trafficReset', 'shareAddrStrategy', 'shareAddr',
+            'settings', 'streamSettings', 'sniffing', 'allocate')
+    return {k: v for k, v in entry.items() if k in keys and v is not None}
+
+
+def rollback_change(s):
+    journal = ROOT / 'pending-change.json'
+    if not journal.exists():
+        say('没有待恢复的修改或删除。')
+        return
+    r = json.loads(journal.read_text())
+    current_state = json.loads(STATE.read_text())
+    if current_state == r['state_after']:
+        journal.unlink()
+        say('上次操作已完成，保留已提交的结果。')
+        return
+    if current_state != r['state_before']:
+        raise RuntimeError('部署记录已被修改，保留现场；请人工核对。')
+    api = wait_panel(s, True)
+    current = get_template(api)
+    # The panel delete endpoint may itself remove the inlet's route.
+    removed = copy.deepcopy(r['template_before'])
+    removed['routing']['rules'] = [x for x in removed['routing']['rules'] if r['tag'] not in x.get('inboundTag', [])]
+    if current not in (r['template_before'], r['template_after'], removed):
+        raise RuntimeError('路由已有后续修改，停止自动恢复。')
+    matches = [e for e in api.request('panel/api/inbounds/list') if e.get('tag') == r['tag']]
+    disabled = dict(r['entry_before'], enable=False)
+    if len(matches) > 1 or (matches and entry_config(matches[0]) not in
+                           (entry_config(r['entry_before']), entry_config(r['entry_after']), entry_config(disabled))):
+        raise RuntimeError('入站已有后续修改，停止自动恢复。')
+    if matches:
+        api.request('panel/api/inbounds/setEnable/' + str(matches[0]['id']), {'enable': False})
+    update_template(api, r['template_before'])
+    restart(added_node_state(s, s['nodes'][0]), True)
+    restored = editable_entry(r['entry_before'])
+    if matches:
+        restored['id'] = matches[0]['id']
+        api.request('panel/api/inbounds/update/' + str(matches[0]['id']), restored)
+    else:
+        restored.pop('id', None)
+        api.request('panel/api/inbounds/add', restored)
+    restart(s, True)
+    restored_matches = [e for e in api.request('panel/api/inbounds/list') if e.get('tag') == r['tag']]
+    if len(restored_matches) != 1 or entry_config(restored_matches[0]) != entry_config(r['entry_before']) or get_template(api) != r['template_before']:
+        raise RuntimeError('恢复核对失败，保留恢复记录，请运行 --rollback-change。')
+    journal.unlink()
+    say('已恢复操作前的入站和路由。')
+
+
+def apply_change(s, item, *, proxy=None, name=None, delete=False):
+    node = item['node']
+    if delete and node['tag'] == HOME_TAG:
+        raise RuntimeError('基础住宅节点请使用替换上游；删除功能用于后续添加的住宅节点。')
+    ensure_no_pending()
+    api = wait_panel(s, True)
+    before = get_template(api)
+    validate_routes(before)
+    check_node_route(before, item)
+    entries = [e for e in api.request('panel/api/inbounds/list') if e.get('tag') == node['tag']]
+    if len(entries) != 1:
+        raise RuntimeError('未找到唯一入站，停止操作。')
+    entry = entries[0]
+    if entry['port'] != node['port'] or json_object(entry['settings'], 'settings')['clients'][0]['id'] != node['uuid']:
+        raise RuntimeError('入站与部署记录不一致，停止操作。')
+    after = copy.deepcopy(before)
+    updated = copy.deepcopy(s)
+    target = next(e for e in managed_residential(updated) if e['node']['tag'] == node['tag'])
+    out_tag = 'residential-out' if node['tag'] == HOME_TAG else node['tag'] + '-out'
+    desired_entry = copy.deepcopy(entry)
+    if delete:
+        after['routing']['rules'] = [r for r in after['routing']['rules'] if node['tag'] not in r.get('inboundTag', [])]
+        if any(r.get('outboundTag') == out_tag for r in after['routing']['rules']):
+            raise RuntimeError('该出站还被其他规则使用，请先在面板解除引用。')
+        after['outbounds'] = [o for o in after['outbounds'] if o.get('tag') != out_tag]
+        def references(value):
+            if isinstance(value, dict): return any(references(v) for v in value.values())
+            if isinstance(value, list): return any(references(v) for v in value)
+            return value == out_tag
+        if references(after):
+            raise RuntimeError('该出站仍被其他配置引用，请先解除引用。')
+        updated['additional_residential'] = [e for e in updated['additional_residential'] if e['node']['tag'] != node['tag']]
+        desired_entry = None
+    else:
+        if name is not None:
+            if not name or len(name) > 64 or any(ord(c) < 32 for c in name):
+                raise ValueError('节点名称须为 1–64 个可显示字符。')
+            target['node']['name'] = name
+            desired_entry['remark'] = name
+        if proxy is not None:
+            check_socks_dns(proxy['host'], proxy['port'])
+            if fetch_ip(f"socks5h://{proxy['host']}:{proxy['port']}", proxy['username'] + ':' + proxy['password'], family4=True) == fetch_ip(family4=True):
+                raise RuntimeError('新住宅出口与服务器相同，未修改。')
+            for o in after['outbounds']:
+                if o.get('tag') == out_tag:
+                    o['settings']['servers'] = [{'address': proxy['host'], 'port': proxy['port'],
+                                                'users': [{'user': proxy['username'], 'pass': proxy['password']}]}]
+            if node['tag'] == HOME_TAG:
+                updated.update(socks_ip=proxy['host'], socks_port=proxy['port'], socks_user=proxy['username'], socks_password=proxy['password'])
+            else:
+                target['proxy'] = proxy
+    if updated == s:
+        say('内容未改变。')
+        return
+    # Recheck after preflight requests before taking ownership of the transaction.
+    if get_template(api) != before or entry_config(next(e for e in api.request('panel/api/inbounds/list') if e.get('tag') == node['tag'])) != entry_config(entry):
+        raise RuntimeError('操作期间面板已被修改，请重试。')
+    journal = ROOT / 'pending-change.json'
+    record = {'tag': node['tag'], 'state_before': s, 'state_after': updated,
+              'template_before': before, 'template_after': after,
+              'entry_before': entry, 'entry_after': desired_entry}
+    save(journal, record)
+    try:
+        api.request('panel/api/inbounds/setEnable/' + str(entry['id']), {'enable': False})
+        # Reload with the inlet disabled before changing its route.
+        restart(added_node_state(s, s['nodes'][0]), True)
+        if delete:
+            api.request('panel/api/inbounds/del/' + str(entry['id']), {})
+        update_template(api, after)
+        restart(added_node_state(s, s['nodes'][0]), True)
+        if not delete:
+            api.request('panel/api/inbounds/update/' + str(entry['id']), editable_entry(desired_entry))
+            restart(s, True)
+            with client(added_node_state(updated, target['node'])) as proxies:
+                if fetch_ip(proxies[0]) == fetch_ip(family4=True):
+                    raise RuntimeError('修改后的住宅出口与服务器相同。')
+        matches = [e for e in api.request('panel/api/inbounds/list') if e.get('tag') == node['tag']]
+        entry_ok = not matches if delete else len(matches) == 1 and entry_config(matches[0]) == entry_config(desired_entry)
+        if get_template(api) != after or not entry_ok:
+            raise RuntimeError('修改后的配置核对失败。')
+        save(ROOT / 'manager.py', Path(__file__).read_text())
+        save(STATE, updated)
+    except BaseException:
+        rollback_change(s)
+        raise
+    s.clear()
+    s.update(updated)
+    journal.unlink()
+    write_results(s)
+    say('住宅节点已删除。原端口的云安全组规则可自行清理。' if delete else '修改成功；节点地址、端口、UUID 和密钥保留。')
+
+
+def ensure_no_pending():
+    for filename, command in [('pending-add.json', '--rollback-add'), ('pending-change.json', '--rollback-change')]:
+        if (ROOT / filename).exists():
+            raise RuntimeError(f'存在中断操作，请先运行 {command}。')
+    migration = ROOT / 'migration-backup.json'
+    if migration.exists() and json.loads(migration.read_text()).get('pending'):
+        raise RuntimeError('迁移尚未结束，请先运行 --rollback-migration。')
+
+
+def manage_residential(s, operation):
+    ensure_no_pending()
+    items = list(managed_residential(s))
+    if operation == 'delete':
+        items = [e for e in items if e['node']['tag'] != HOME_TAG]
+    if not items:
+        say('没有可删除的追加住宅节点。基础住宅节点可使用替换上游。')
+        return
+    for i, item in enumerate(items, 1):
+        say(f"{i}. {item['node']['name']}（端口 {item['node']['port']}）")
+    choice = ask('选择节点序号（0 返回）', '0')
+    if choice == '0':
+        return
+    if not choice.isdigit() or not 1 <= int(choice) <= len(items):
+        raise ValueError('节点序号无效。')
+    item = items[int(choice) - 1]
+    if operation == 'delete':
+        if ask(f"删除 {item['node']['name']} 后原链接失效，输入 DELETE 确认", '取消') != 'DELETE':
+            return
+        apply_change(s, item, delete=True)
+    elif operation == 'rename':
+        apply_change(s, item, name=ask('新名称', item['node']['name']))
+    else:
+        host = ask_socks_host()
+        raw_port = ask('住宅 SOCKS5 端口', item['proxy']['port'])
+        if not raw_port.isdigit() or not 1 <= int(raw_port) <= 65535:
+            raise ValueError('端口须为 1–65535。')
+        user = ask('住宅 SOCKS5 用户名')
+        password = ask('住宅 SOCKS5 密码（隐藏输入）', secret=True)
+        for v in (user, password):
+            curl_quote(v)
+            if not v or len(v.encode()) > 255:
+                raise ValueError('用户名和密码须为 1–255 字节。')
+        if ':' in user:
+            raise ValueError('检测工具不支持含冒号的用户名。')
+        apply_change(s, item, proxy={'host': host, 'port': int(raw_port), 'username': user, 'password': password})
+
+
+def menu(s):
+    while True:
+        say(f'\n3X-UI 住宅中转管理 · 脚本 {SCRIPT_VERSION}')
+        say('1. 查看节点与登录信息\n2. 添加住宅 IP\n3. 检查全部节点\n4. 替换住宅代理\n5. 重命名住宅节点\n6. 删除追加住宅节点\n7. 脱敏诊断\n8. 恢复中断操作\n0. 退出')
+        choice = ask('选择操作', '0')
+        if choice == '0':
+            return
+        try:
+            s = json.loads(STATE.read_text())
+            if choice == '1':
+                say(credentials(s))
+            elif choice == '7':
+                diagnostics(s)
+            elif choice == '8':
+                if (ROOT / 'pending-change.json').exists(): rollback_change(s)
+                elif (ROOT / 'pending-add.json').exists(): rollback_add(s)
+                elif (ROOT / 'migration-backup.json').exists() and json.loads((ROOT / 'migration-backup.json').read_text()).get('pending'): rollback_migration(s)
+                else: say('没有中断操作。')
+            else:
+                ensure_no_pending()
+                if choice == '2': add_residential(s)
+                elif choice == '3': check_all(s)
+                elif choice in ('4', '5', '6'): manage_residential(s, {'4': 'edit', '5': 'rename', '6': 'delete'}[choice])
+                else: say('请输入菜单中的序号。')
+        except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
+            say(f'未完成：{exc}')
+
+
 def main():
     parser = argparse.ArgumentParser(description='3X-UI 一键中转住宅 IP')
+    parser.add_argument('--version', action='version', version='relay ' + SCRIPT_VERSION + ' / 3X-UI ' + VERSION)
+    for flag in ('menu', 'edit-residential', 'rename-residential', 'delete-residential', 'rollback-change', 'diagnostics'):
+        parser.add_argument('--' + flag, action='store_true')
     parser.add_argument('--resume', action='store_true', help='仅恢复本脚本未完成的部署；重新应用其配置')
     parser.add_argument('--check', action='store_true', help='只检查本脚本部署；不注入故障')
     parser.add_argument('--migrate', action='store_true', help='升级本脚本已完成的部署，保留面板及节点凭据')
@@ -1247,8 +1580,11 @@ def main():
     parser.add_argument('--results', action='store_true', help='重新显示登录信息和节点，不改配置')
     parser.add_argument('--copy', type=int, nargs='?', const=0, help='复制菜单；可直接指定菜单序号')
     args = parser.parse_args()
+    if len(sys.argv) == 1 and STATE.exists():
+        args.menu = True
+    extra = any((args.menu, args.edit_residential, args.rename_residential, args.delete_residential, args.rollback_change, args.diagnostics))
     banner()
-    if sum((args.resume, args.check, args.migrate, args.rollback_migration, args.results, args.add_residential, args.rollback_add, args.copy is not None)) > 1:
+    if sum((args.menu, args.edit_residential, args.rename_residential, args.delete_residential, args.rollback_change, args.diagnostics, args.resume, args.check, args.migrate, args.rollback_migration, args.results, args.add_residential, args.rollback_add, args.copy is not None)) > 1:
         parser.error('一次只能选择一种操作。')
     os.umask(0o077)
     arch = check_os()
@@ -1266,10 +1602,24 @@ def main():
     owned_empty = (ROOT / 'owner').is_file() and (ROOT / 'owner').read_text() == '3xui-dual-v1'
     if args.resume and not STATE.exists() and owned_empty and not APP.exists() and not Path('/etc/x-ui').exists():
         args.resume = False  # Earlier interruption during dependency installation / input wizard.
-    if args.resume or args.check or args.migrate or args.rollback_migration or args.results or args.add_residential or args.rollback_add or args.copy is not None:
+    if extra or args.resume or args.check or args.migrate or args.rollback_migration or args.results or args.add_residential or args.rollback_add or args.copy is not None:
         s = json.loads(STATE.read_text())
         if s.get('managed_by') != '3xui-dual-v1' or s['arch'] != arch:
             raise RuntimeError('不属于本脚本管理的部署。')
+        if args.diagnostics:
+            diagnostics(s)
+            return
+        if args.rollback_change:
+            rollback_change(s)
+            return
+        if extra:
+            if not s.get('complete'):
+                raise RuntimeError('请先用 --resume 完成安装。')
+            if args.menu: menu(s)
+            else: manage_residential(s, 'edit' if args.edit_residential else 'rename' if args.rename_residential else 'delete')
+            return
+        if (ROOT / 'pending-change.json').exists() and not (args.results or args.copy is not None):
+            raise RuntimeError('存在中断修改，请先运行 --rollback-change。')
         if args.rollback_add:
             rollback_add(s)
             return
@@ -1297,10 +1647,8 @@ def main():
             migrate(s)
             return
         if args.check:
-            selftest(s, True, failure=False)
-            run(['openssl', 'x509', '-in', CERT / 'fullchain.pem', '-noout', '-checkend', '172800'])
-            run(['systemctl', 'is-active', '--quiet', '3xui-dual-renew.timer'])
-            say('HTTPS 验证与续期定时器检查通过。外部端口仍需客户端验证。')
+            ensure_no_pending()
+            check_all(s)
             return
         if s.get('complete'):
             raise RuntimeError('已有成功部署；请用 --check，脚本不会重置你在面板里的后续修改。')

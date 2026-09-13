@@ -48,3 +48,20 @@
 2026-09-13：复现新增住宅 API 返回 settings 对象时重复 json.loads 的错误，且旧回滚流程同样报错。统一兼容对象/JSON 字符串，POST 表单中嵌套对象用 JSON 编码并略过 null 字段；覆盖新增、残留恢复、迁移和配置快照。对象格式场景修复前 3 项复现失败，修复后完整 61 项回归通过。未直接操作用户 VPS；旧失败残留需用新脚本 --rollback-add 后重试。
 
 2026-09-13：再次新增在 update/:id 被拒绝；用 v3.7.0 同版本 Gin 1.12.0 和匹配的字段类型实际复现 clientStats 数组表单绑定失败（cannot unmarshal array into ClientTraffic）。新增改用官方 setEnable/:id，只提交 enable，并读取核对启用和节点参数；其他完整入站更新也排除只读 clientStats。64 项 Python 回归通过，独立 Go/Gin 参数绑定验证通过；这不是完整面板/VPS 端到端验收。截图中的失败已经成功自动回滚。
+
+2026-09-13 管理优化（脚本 1.1.0，本地未发布）：
+新增全节点 --check、统一 --menu、住宅上游替换/改名/追加节点删除、持久化 --rollback-change、脱敏 --diagnostics、curl 分类错误及独立脚本版本。单一 Python 源码通过 scripts/build.py 生成安装包和 SHA256SUMS，并同步视频工作目录副本。
+79 项 Python 回归通过，包括修改失败恢复、删除响应丢失恢复、提交后残留记录、后续面板修改保护、多节点检查继续执行和诊断凭据排除。测试需要临时回环端口，在允许本地端口绑定的执行环境完成。
+真实 Xray 本机测试通过：直连和住宅 TCP、住宅 UDP、新增节点、两个住宅上游分别故障时不回退且其他入口保持可用。仅使用虚构凭据和本机测试服务。
+新增 tests/e2e_panel.py 完整 Linux 面板验收入口；只做了 Python 语法与命令帮助检查。当前 Mac 没有 Docker，也未提供一次性 Linux VPS，因此未执行真实面板/ACME/住宅供应商的端到端验收。未修改用户 VPS，未提交或推送 GitHub。
+
+2026-09-13 15:06 +08:00 用户现有 VPS 实测：
+经用户授权，通过当前 XTerminal SSH 会话操作。先备份 /root/3xui-dual 与 SQLite 数据库到 /root/relay-before-1.1.0-20260913-145145；未重装面板。
+新版 Python 源码与安装包均完成 SHA256 比对；服务器 /root/deploy-3xui-dual.sh 及 /root/3xui-dual/manager.py 已更新为脚本 1.1.0。
+现有 3 个节点真实 VLESS/REALITY 本机 TCP 出口检测均通过。基础住宅节点 UDP 暂未测通，原追加住宅节点 UDP 通过；证书剩余至少 48 小时、续期定时器和面板服务正常。
+通过 tests/live_validation.py 创建仅监听 127.0.0.1 的临时住宅入站，使用服务器已保存的住宅代理凭据（未导出）。真实 API 新增响应丢失回滚、正常新增、改名、替换为另一已配置住宅上游、删除均通过。
+测试后断言部署 state、原有全部入站和路由与测试前一致，并再次检查原节点连接。报告 ok=true、original_preserved=true；pending 记录为 0；临时节点清理完成。
+实际运行 Shell 管理菜单、7 脱敏诊断、8 恢复入口（无中断操作）与 0 退出。SSH 已返回普通提示符。
+曾尝试限时公钥连接，但服务器仅允许密码认证，未成功建立直连；临时公钥和本地私钥均已清理，未修改 sshd 配置。
+服务器结果：/root/3xui-dual/live-validation-result.json；过程日志：/root/3xui-dual/live-validation.log；脱敏诊断：/root/3xui-dual/diagnostics.json。
+本次验证针对已安装的实际面板和真实供应商链路；未在此服务器重新执行安装、卸载、迁移或重新申请证书，也未替代外部客户端的公网入口验收。未推送 GitHub。
