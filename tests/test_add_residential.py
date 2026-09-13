@@ -17,9 +17,16 @@ class Panel:
         self.entries = [dict(m.inbound(s,n),id=i+1) for i,n in enumerate(s['nodes'])]
         self.calls = []
         self.fail_add_reply = False
+        self.object_fields = False
     def request(self, path, data=None):
         self.calls.append((path,copy.deepcopy(data)))
-        if path == 'panel/api/inbounds/list':return copy.deepcopy(self.entries)
+        if path == 'panel/api/inbounds/list':
+            entries=copy.deepcopy(self.entries)
+            if self.object_fields:
+                for entry in entries:
+                    for key in ('settings','streamSettings','sniffing'):
+                        if isinstance(entry.get(key),str):entry[key]=json.loads(entry[key])
+            return entries
         if path == 'panel/api/xray/':return {'xraySetting':copy.deepcopy(self.config)}
         if path == 'panel/api/xray/update':self.config=json.loads(data['xraySetting']);return
         if path == 'panel/api/inbounds/add':
@@ -184,3 +191,15 @@ class AddResidentialTests(unittest.TestCase):
         self.assert_original()
         self.assertIn(['ufw','--force','delete','allow','54321/tcp'],[c.args[0] for c in self.run.call_args_list])
         self.assertEqual((self.root/'ufw-added.txt').read_text(),'')
+
+    def test_object_fields_complete_add_and_output_link(self):
+        self.panel.object_fields=True
+        self.test_success_preserves_old_nodes_and_persists_new_link()
+
+    def test_object_fields_allow_recovery_of_previous_failed_add(self):
+        self.panel.object_fields=True
+        self.test_killed_transaction_can_be_recovered_later()
+
+    def test_object_fields_roll_back_after_node_failure(self):
+        self.panel.object_fields=True
+        self.test_node_failure_rolls_back()

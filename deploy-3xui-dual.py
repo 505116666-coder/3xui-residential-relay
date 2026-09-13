@@ -266,6 +266,27 @@ def check_os():
     return arch
 
 
+def json_object(value, label):
+    """Panel releases return nested configuration as either JSON text or objects."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            raise RuntimeError(f'面板 {label} 不是有效 JSON。') from None
+    if not isinstance(value, dict):
+        raise RuntimeError(f'面板 {label} 应为 JSON 对象。')
+    return copy.deepcopy(value)
+
+
+def api_form(data):
+    # The API response uses nested objects, but our requests use form encoding.
+    # Never stringify a dict with Python repr, or send null numeric fields as "None".
+    return urllib.parse.urlencode({
+        key: json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value
+        for key, value in data.items() if value is not None
+    }).encode()
+
+
 class API:
     def __init__(self, state, tls=False):
         self.s, self.tls = state, tls
@@ -277,7 +298,7 @@ class API:
         conn.connect()
         if self.tls:
             conn.sock = ssl.create_default_context().wrap_socket(conn.sock, server_hostname=self.s['ip'])
-        body = urllib.parse.urlencode(data).encode() if data is not None else None
+        body = api_form(data) if data is not None else None
         headers = {'Host': f"{self.s['ip']}:{self.s['panel_port']}",
                    'Cookie': '; '.join(f'{k}={v}' for k, v in self.cookies.items())}
         if data is not None:
@@ -388,10 +409,8 @@ def update_template(api, value):
 
 
 def get_template(api):
-    value = api.request('panel/api/xray/', {})
-    if isinstance(value, str):
-        value = json.loads(value)
-    return value['xraySetting']
+    value = json_object(api.request('panel/api/xray/', {}), 'Xray 设置')
+    return json_object(value['xraySetting'], 'xraySetting')
 
 
 def validate_routes(value):
@@ -947,7 +966,7 @@ def migrate(s):
         update_template(api, desired)
         for entry in managed:
             item = copy.deepcopy(entry)
-            stream = json.loads(item['streamSettings'])
+            stream = json_object(item['streamSettings'], 'streamSettings')
             stream['realitySettings']['minClientVer'] = '1.8.0'
             item['streamSettings'] = json.dumps(stream)
             api.request('panel/api/inbounds/update/' + str(item['id']), item)
@@ -1038,7 +1057,7 @@ def rollback_add(s):
         raise RuntimeError('添加中断后配置又被修改，停止自动恢复以保留后续修改。')
     matches = [e for e in api.request('panel/api/inbounds/list') if e.get('tag') == tag]
     for entry in matches:
-        clients = json.loads(entry['settings']).get('clients', [])
+        clients = json_object(entry['settings'], 'settings').get('clients', [])
         if entry['port'] != record['node']['port'] or len(clients) != 1 or clients[0].get('id') != record['node']['uuid']:
             raise RuntimeError('新增入站已被修改，停止自动删除。')
     for entry in matches:
@@ -1073,7 +1092,7 @@ def apply_residential_add(s, node, proxy, original, api):
         if len(entries) != 1:
             raise RuntimeError('新增入站未正确保存。')
         entry = entries[0]
-        if entry['port'] != node['port'] or json.loads(entry['settings'])['clients'][0]['id'] != node['uuid']:
+        if entry['port'] != node['port'] or json_object(entry['settings'], 'settings')['clients'][0]['id'] != node['uuid']:
             raise RuntimeError('新增入站参数不一致。')
         update_template(api, desired)
         if get_template(api) != desired:
@@ -1126,7 +1145,14 @@ def apply_residential_add(s, node, proxy, original, api):
 def inbound_snapshot(entries):
     # Traffic counters change while the wizard is open; compare configuration only.
     keys = ('id', 'tag', 'port', 'enable', 'listen', 'protocol', 'settings', 'streamSettings', 'sniffing', 'remark')
-    return sorted([{k: e.get(k) for k in keys} for e in entries], key=lambda e: e['id'])
+    snapshots = []
+    for entry in entries:
+        snapshot = {k: entry.get(k) for k in keys}
+        for key in ('settings', 'streamSettings', 'sniffing'):
+            if snapshot[key] not in (None, ''):
+                snapshot[key] = json_object(snapshot[key], key)
+        snapshots.append(snapshot)
+    return sorted(snapshots, key=lambda e: e['id'])
 
 
 def add_residential(s):
