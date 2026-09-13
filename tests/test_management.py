@@ -25,7 +25,9 @@ class ManagementTests(unittest.TestCase):
         self.add()
         self.fetch.side_effect = ['9.9.9.9', '8.8.8.8']
         old = copy.deepcopy(self.item['node'])
-        m.apply_change(self.s, self.item, name='改名住宅')
+        with patch.object(m, 'restart') as restart:
+            m.apply_change(self.s, self.item, name='改名住宅')
+            restart.assert_not_called()
         new = self.s['additional_residential'][0]['node']
         self.assertEqual({k:v for k,v in old.items() if k != 'name'}, {k:v for k,v in new.items() if k != 'name'})
         self.assertEqual(new['name'], '改名住宅')
@@ -118,7 +120,7 @@ class ManagementTests(unittest.TestCase):
         with self.assertRaises(RuntimeError): m.apply_change(self.s,next(m.managed_residential(self.s)),delete=True)
 
     def test_menu_returns_after_invalid_option(self):
-        with patch.object(m,'ask',side_effect=['99','0']): m.menu(self.s)
+        with patch.object(m,'LOCK_PATH',self.root/'operation.lock'), patch.object(m,'ask',side_effect=['99','0']): m.menu(self.s)
         self.assertIn('请输入菜单中的序号',self.output.getvalue())
 
     def test_delete_refuses_custom_outbound_reference(self):
@@ -151,3 +153,18 @@ class ManagementTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'SOCKS 握手失败') as error:
                 probe.fetch_ip('socks5h://example.com:1080','user:secret-password')
             self.assertNotIn('secret-password',str(error.exception))
+
+    def test_menu_wait_does_not_hold_operation_lock(self):
+        def choose(*args):
+            with m.operation_lock():
+                pass
+            return '0'
+        with patch.object(m, 'LOCK_PATH', self.root/'operation.lock'), patch.object(m, 'ask', side_effect=choose):
+            m.menu(self.s)
+
+    def test_operation_lock_excludes_concurrent_operation(self):
+        with patch.object(m, 'LOCK_PATH', self.root/'operation.lock'):
+            with m.operation_lock():
+                with self.assertRaisesRegex(RuntimeError, '另一个'):
+                    with m.operation_lock(): pass
+            with m.operation_lock(): pass

@@ -35,3 +35,13 @@ class ShortcutTests(unittest.TestCase):
             with patch.object(m,'SHORTCUT',command):
                 self.assertFalse(m.install_shortcut())
             self.assertTrue(command.is_symlink());self.assertEqual(target.read_text(),'unchanged')
+
+    def test_existing_shortcut_is_not_rewritten(self):
+        with tempfile.TemporaryDirectory() as td:
+            command=Path(td)/'relay'
+            command.write_text(m.SHORTCUT_TEXT);command.chmod(0o700)
+            before=command.stat().st_mtime_ns
+            with patch.object(m,'SHORTCUT',command), patch.object(m,'say') as say:
+                self.assertTrue(m.install_shortcut())
+                say.assert_not_called()
+            self.assertEqual(command.stat().st_mtime_ns,before)

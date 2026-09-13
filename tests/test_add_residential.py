@@ -164,7 +164,7 @@ class AddResidentialTests(unittest.TestCase):
         self.assertEqual(json.loads(m.STATE.read_text()),current)
         self.assertFalse((self.root/'pending-add.json').exists())
     def test_cli_add_dispatch_never_calls_install(self):
-        with patch.object(m.sys,'argv',['manager.py','--add-residential']),patch.object(m,'check_os',return_value='amd64'),patch.object(m,'open',create=True),patch.object(m.fcntl,'flock'),patch.object(m,'add_residential') as add,patch.object(m,'deploy') as deploy:
+        with patch.object(m.sys,'argv',['manager.py','--add-residential']),patch.object(m,'check_os',return_value='amd64'),patch.object(m,'LOCK_PATH',self.root/'operation.lock'),patch.object(m.fcntl,'flock'),patch.object(m,'add_residential') as add,patch.object(m,'deploy') as deploy:
             m.main()
         add.assert_called_once_with(self.s);deploy.assert_not_called()
 

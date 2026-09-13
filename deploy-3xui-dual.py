@@ -28,7 +28,7 @@ import time
 import urllib.parse
 import uuid
 
-SCRIPT_VERSION = '1.1.1'
+SCRIPT_VERSION = '1.1.2'
 VERSION = 'v3.7.0'
 ACME_COMMIT = '181425b3c8373ca23c0664948b97edf5ed84e9c5'
 DIGESTS = {
@@ -69,10 +69,69 @@ def install_shortcut():
             (not SHORTCUT.is_file() or SHORTCUT_MARKER not in SHORTCUT.read_text(errors='replace').splitlines())):
         say('relay 命令已被其他程序占用，保留原命令；可用 bash /root/3xui-residential-relay.sh --menu。')
         return False
+    if SHORTCUT.exists() and SHORTCUT.read_text() == SHORTCUT_TEXT and SHORTCUT.stat().st_mode & 0o777 == 0o700:
+        return True
     save(SHORTCUT, SHORTCUT_TEXT)
     SHORTCUT.chmod(0o700)
     say('下次输入 relay 即可打开管理菜单。')
     return True
+
+
+LOCK_PATH = Path('/run/lock/3xui-dual.lock')
+
+
+@contextlib.contextmanager
+def operation_lock():
+    with LOCK_PATH.open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError('另一个部署或检查进程正在运行，请稍后重试。') from None
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+class ProbeError(RuntimeError):
+    """Only locally authored, credential-free network failure descriptions."""
+
+
+def update_manager():
+    ensure_no_pending()
+    base = 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/'
+    def download(url):
+        return run(['curl', '--noproxy', '*', '-fLsS', '--proto', '=https',
+                    '--proto-redir', '=https', '--connect-timeout', '10', '--max-time', '60', url], timeout=70).stdout
+    commit = json.loads(download('https://api.github.com/repos/Didushan/3xui-residential-relay/commits/main'))['sha']
+    if not re.fullmatch('[0-9a-f]{40}', commit):
+        raise RuntimeError('更新版本标识无效。')
+    sums = download(base + commit + '/SHA256SUMS')
+    source = download(base + commit + '/deploy-3xui-dual.py')
+    expected = next((line.split()[0] for line in sums.splitlines()
+                     if len(line.split()) == 2 and line.split()[1] == 'deploy-3xui-dual.py'), None)
+    if hashlib.sha256(source.encode()).hexdigest() != expected:
+        raise RuntimeError('更新文件校验失败，已保留旧版。')
+    compile(source, 'manager.py', 'exec')
+    manager = ROOT / 'manager.py'
+    old = manager.read_text()
+    if source == old:
+        say('已是最新版本。')
+        return
+    with tempfile.TemporaryDirectory(dir=ROOT) as td:
+        candidate = Path(td) / 'manager.py'
+        save(candidate, source)
+        version = run([sys.executable, candidate, '--version'], timeout=15).stdout.strip()
+        if not re.fullmatch(r'relay [0-9]+\.[0-9]+\.[0-9]+ / 3X-UI v[0-9.]+', version):
+            raise RuntimeError('新版启动检查失败，已保留旧版。')
+    save(ROOT / 'manager.previous.py', old)
+    try:
+        save(manager, source)
+        run([sys.executable, manager, '--version'], timeout=15)
+    except BaseException:
+        save(manager, old)
+        raise
+    say('已更新至 ' + version + '；重新输入 relay 使用新版。旧版备份：' + str(ROOT / 'manager.previous.py'))
 
 
 def run(args, *, input=None, timeout=180, check=True, cwd=None):
@@ -256,7 +315,7 @@ def fetch_ip(proxy=None, auth=None, family4=False):
                35: 'TLS 握手失败，请检查网络和服务器时间。',
                60: 'HTTPS 证书校验失败，请检查服务器时间及 CA 证书。',
                97: 'SOCKS 握手失败，请检查账号密码、IP 白名单及供应商限制。'}
-    raise RuntimeError('出口检测失败：' + reasons.get(p.returncode, '检测服务未返回公网 IP，请重试或检查出口网络。'))
+    raise ProbeError('出口检测失败：' + reasons.get(p.returncode, '检测服务未返回公网 IP，请重试或检查出口网络。'))
 
 
 def available_ports(ports):
@@ -1312,15 +1371,15 @@ def check_all(s):
             with client(added_node_state(s, node)) as proxies:
                 exit_ip = fetch_ip(proxies[0])
                 if (exit_ip == direct) != (node['tag'] == DIRECT_TAG):
-                    raise RuntimeError('出口与预期不符，请核对路由。')
+                    raise ProbeError('出口与预期不符，请核对路由。')
                 result.update(ok=True, exit_ip=exit_ip,
                               udp_test_passed=udp_probe(proxies[0]) if 'proxy' in item else None)
             say(f"✓ {node['name']} | TCP 通过 | 出口 {exit_ip}" +
-                (' | UDP ' + ('通过' if result['udp_test_passed'] else '暂未测通') if 'proxy' in item else ''))
-        except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired):
+                (' | UDP ' + ('通过' if result['udp_test_passed'] else '未测通（TCP 可用）') if 'proxy' in item else ''))
+        except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
             # Never copy arbitrary server/network error strings into shareable reports.
             result['ok'] = False
-            result['error'] = stage + '检查失败；核对该项配置，连接失败时检查代理认证、白名单和供应商连通性。'
+            result['error'] = str(exc) if isinstance(exc, ProbeError) else (stage + ('检查超时，请检查网络连通性。' if isinstance(exc, subprocess.TimeoutExpired) else '检查失败，请核对该项配置及私有日志。'))
             say(f"✗ {node['name']} | {result['error']}")
         report['nodes'].append(result)
     report['https_ok'] = run(['openssl', 'x509', '-in', CERT / 'fullchain.pem', '-noout', '-checkend', '172800'], check=False).returncode == 0
@@ -1395,18 +1454,25 @@ def rollback_change(s):
     if len(matches) > 1 or (matches and entry_config(matches[0]) not in
                            (entry_config(r['entry_before']), entry_config(r['entry_after']), entry_config(disabled))):
         raise RuntimeError('入站已有后续修改，停止自动恢复。')
-    if matches:
-        api.request('panel/api/inbounds/setEnable/' + str(matches[0]['id']), {'enable': False})
-    update_template(api, r['template_before'])
-    restart(added_node_state(s, s['nodes'][0]), True)
-    restored = editable_entry(r['entry_before'])
-    if matches:
+    if r.get('metadata_only'):
+        if len(matches) != 1 or current != r['template_before']:
+            raise RuntimeError('改名恢复现场不匹配，保留恢复记录。')
+        restored = editable_entry(r['entry_before'])
         restored['id'] = matches[0]['id']
         api.request('panel/api/inbounds/update/' + str(matches[0]['id']), restored)
     else:
-        restored.pop('id', None)
-        api.request('panel/api/inbounds/add', restored)
-    restart(s, True)
+        if matches:
+            api.request('panel/api/inbounds/setEnable/' + str(matches[0]['id']), {'enable': False})
+        update_template(api, r['template_before'])
+        restart(added_node_state(s, s['nodes'][0]), True)
+        restored = editable_entry(r['entry_before'])
+        if matches:
+            restored['id'] = matches[0]['id']
+            api.request('panel/api/inbounds/update/' + str(matches[0]['id']), restored)
+        else:
+            restored.pop('id', None)
+            api.request('panel/api/inbounds/add', restored)
+        restart(s, True)
     restored_matches = [e for e in api.request('panel/api/inbounds/list') if e.get('tag') == r['tag']]
     if len(restored_matches) != 1 or entry_config(restored_matches[0]) != entry_config(r['entry_before']) or get_template(api) != r['template_before']:
         raise RuntimeError('恢复核对失败，保留恢复记录，请运行 --rollback-change。')
@@ -1474,22 +1540,29 @@ def apply_change(s, item, *, proxy=None, name=None, delete=False):
     journal = ROOT / 'pending-change.json'
     record = {'tag': node['tag'], 'state_before': s, 'state_after': updated,
               'template_before': before, 'template_after': after,
-              'entry_before': entry, 'entry_after': desired_entry}
+              'entry_before': entry, 'entry_after': desired_entry,
+              'metadata_only': name is not None and proxy is None and not delete}
     save(journal, record)
     try:
-        api.request('panel/api/inbounds/setEnable/' + str(entry['id']), {'enable': False})
-        # Reload with the inlet disabled before changing its route.
-        restart(added_node_state(s, s['nodes'][0]), True)
-        if delete:
-            api.request('panel/api/inbounds/del/' + str(entry['id']), {})
-        update_template(api, after)
-        restart(added_node_state(s, s['nodes'][0]), True)
-        if not delete:
+        if record['metadata_only']:
             api.request('panel/api/inbounds/update/' + str(entry['id']), editable_entry(desired_entry))
-            restart(s, True)
             with client(added_node_state(updated, target['node'])) as proxies:
                 if fetch_ip(proxies[0]) == fetch_ip(family4=True):
                     raise RuntimeError('修改后的住宅出口与服务器相同。')
+        else:
+            api.request('panel/api/inbounds/setEnable/' + str(entry['id']), {'enable': False})
+            # Reload with the inlet disabled before changing its route.
+            restart(added_node_state(s, s['nodes'][0]), True)
+            if delete:
+                api.request('panel/api/inbounds/del/' + str(entry['id']), {})
+            update_template(api, after)
+            restart(added_node_state(s, s['nodes'][0]), True)
+            if not delete:
+                api.request('panel/api/inbounds/update/' + str(entry['id']), editable_entry(desired_entry))
+                restart(s, True)
+                with client(added_node_state(updated, target['node'])) as proxies:
+                    if fetch_ip(proxies[0]) == fetch_ip(family4=True):
+                        raise RuntimeError('修改后的住宅出口与服务器相同。')
         matches = [e for e in api.request('panel/api/inbounds/list') if e.get('tag') == node['tag']]
         entry_ok = not matches if delete else len(matches) == 1 and entry_config(matches[0]) == entry_config(desired_entry)
         if get_template(api) != after or not entry_ok:
@@ -1556,27 +1629,31 @@ def manage_residential(s, operation):
 def menu(s):
     while True:
         say(f'\n3X-UI 住宅中转管理 · 脚本 {SCRIPT_VERSION}')
-        say('1. 查看节点与登录信息\n2. 添加住宅 IP\n3. 检查全部节点\n4. 替换住宅代理\n5. 重命名住宅节点\n6. 删除追加住宅节点\n7. 脱敏诊断\n8. 恢复中断操作\n0. 退出')
+        say('1. 查看节点与登录信息\n2. 添加住宅 IP\n3. 检查全部节点\n4. 替换住宅代理\n5. 重命名住宅节点\n6. 删除追加住宅节点\n7. 脱敏诊断\n8. 恢复中断操作\n9. 更新管理脚本\n0. 退出')
         choice = ask('选择操作', '0')
         if choice == '0':
             return
         try:
-            s = json.loads(STATE.read_text())
-            if choice == '1':
-                say(credentials(s))
-            elif choice == '7':
-                diagnostics(s)
-            elif choice == '8':
-                if (ROOT / 'pending-change.json').exists(): rollback_change(s)
-                elif (ROOT / 'pending-add.json').exists(): rollback_add(s)
-                elif (ROOT / 'migration-backup.json').exists() and json.loads((ROOT / 'migration-backup.json').read_text()).get('pending'): rollback_migration(s)
-                else: say('没有中断操作。')
-            else:
-                ensure_no_pending()
-                if choice == '2': add_residential(s)
-                elif choice == '3': check_all(s)
-                elif choice in ('4', '5', '6'): manage_residential(s, {'4': 'edit', '5': 'rename', '6': 'delete'}[choice])
-                else: say('请输入菜单中的序号。')
+            with operation_lock():
+                s = json.loads(STATE.read_text())
+                if choice == '9':
+                    update_manager()
+                    return
+                if choice == '1':
+                    say(credentials(s))
+                elif choice == '7':
+                    diagnostics(s)
+                elif choice == '8':
+                    if (ROOT / 'pending-change.json').exists(): rollback_change(s)
+                    elif (ROOT / 'pending-add.json').exists(): rollback_add(s)
+                    elif (ROOT / 'migration-backup.json').exists() and json.loads((ROOT / 'migration-backup.json').read_text()).get('pending'): rollback_migration(s)
+                    else: say('没有中断操作。')
+                else:
+                    ensure_no_pending()
+                    if choice == '2': add_residential(s)
+                    elif choice == '3': check_all(s)
+                    elif choice in ('4', '5', '6'): manage_residential(s, {'4': 'edit', '5': 'rename', '6': 'delete'}[choice])
+                    else: say('请输入菜单中的序号。')
         except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as exc:
             say(f'未完成：{exc}')
 
@@ -1584,7 +1661,7 @@ def menu(s):
 def main():
     parser = argparse.ArgumentParser(description='3X-UI 一键中转住宅 IP')
     parser.add_argument('--version', action='version', version='relay ' + SCRIPT_VERSION + ' / 3X-UI ' + VERSION)
-    for flag in ('menu', 'edit-residential', 'rename-residential', 'delete-residential', 'rollback-change', 'diagnostics'):
+    for flag in ('menu', 'edit-residential', 'rename-residential', 'delete-residential', 'rollback-change', 'diagnostics', 'update'):
         parser.add_argument('--' + flag, action='store_true')
     parser.add_argument('--resume', action='store_true', help='仅恢复本脚本未完成的部署；重新应用其配置')
     parser.add_argument('--check', action='store_true', help='只检查本脚本部署；不注入故障')
@@ -1594,17 +1671,17 @@ def main():
     parser.add_argument('--rollback-add', action='store_true', help='撤回中断的住宅添加操作')
     parser.add_argument('--results', action='store_true', help='重新显示登录信息和节点，不改配置')
     parser.add_argument('--copy', type=int, nargs='?', const=0, help='复制菜单；可直接指定菜单序号')
-    args = parser.parse_args()
+    args = parser.parse_args(['--update'] if sys.argv[1:] == ['update'] else None)
     if len(sys.argv) == 1 and STATE.exists():
         args.menu = True
-    extra = any((args.menu, args.edit_residential, args.rename_residential, args.delete_residential, args.rollback_change, args.diagnostics))
+    extra = any((args.menu, args.edit_residential, args.rename_residential, args.delete_residential, args.rollback_change, args.diagnostics, args.update))
     banner()
-    if sum((args.menu, args.edit_residential, args.rename_residential, args.delete_residential, args.rollback_change, args.diagnostics, args.resume, args.check, args.migrate, args.rollback_migration, args.results, args.add_residential, args.rollback_add, args.copy is not None)) > 1:
+    if sum((args.menu, args.edit_residential, args.rename_residential, args.delete_residential, args.rollback_change, args.diagnostics, args.update, args.resume, args.check, args.migrate, args.rollback_migration, args.results, args.add_residential, args.rollback_add, args.copy is not None)) > 1:
         parser.error('一次只能选择一种操作。')
     os.umask(0o077)
     arch = check_os()
     global DEPLOY_LOCK
-    DEPLOY_LOCK = open('/run/lock/3xui-dual.lock', 'w')
+    DEPLOY_LOCK = LOCK_PATH.open('a')
     try:
         fcntl.flock(DEPLOY_LOCK, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
@@ -1622,8 +1699,16 @@ def main():
         if s.get('managed_by') != '3xui-dual-v1' or s['arch'] != arch:
             raise RuntimeError('不属于本脚本管理的部署。')
         if s.get('complete') and (args.menu or args.results):
-            save(ROOT / 'manager.py', Path(__file__).read_text())
+            manager = ROOT / 'manager.py'
+            source = Path(__file__).read_text()
+            if not manager.exists() or manager.read_text() != source:
+                save(manager, source)
             install_shortcut()
+        if args.update:
+            if not s.get('complete'):
+                raise RuntimeError('请先完成安装。')
+            update_manager()
+            return
         if args.diagnostics:
             diagnostics(s)
             return
@@ -1633,7 +1718,10 @@ def main():
         if extra:
             if not s.get('complete'):
                 raise RuntimeError('请先用 --resume 完成安装。')
-            if args.menu: menu(s)
+            if args.menu:
+                fcntl.flock(DEPLOY_LOCK, fcntl.LOCK_UN)
+                DEPLOY_LOCK.close()
+                menu(s)
             else: manage_residential(s, 'edit' if args.edit_residential else 'rename' if args.rename_residential else 'delete')
             return
         if (ROOT / 'pending-change.json').exists() and not (args.results or args.copy is not None):
