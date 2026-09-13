@@ -112,16 +112,6 @@ curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main
 - 按结果提示在云安全组或其他防火墙放行新节点的 **TCP 端口**，再导入客户端测试。
 - 添加失败会尝试撤回本次变更；提示存在中断操作时，使用菜单第 **8** 项处理。
 
-### 原来使用 relay 的服务器
-
-首次切换到新命令，在服务器运行一次：
-
-```bash
-curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main/3xui-residential-relay.sh' -o /root/3xui-residential-relay.sh && bash /root/3xui-residential-relay.sh --results
-```
-
-完成后使用 `3xui-relay`；脚本会移除由本项目创建的旧 `relay` 快捷命令，保留其他程序的同名命令及现有节点配置。
-
 更新与异常恢复详见[维护与排查](docs/维护说明.md)，验证范围详见[开发与测试](docs/开发与测试.md)。
 
 ## 六、一键卸载
