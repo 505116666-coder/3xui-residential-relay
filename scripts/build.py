@@ -13,7 +13,7 @@ source = root / 'deploy-3xui-dual.py'
 installer = root / '3xui-residential-relay.sh'
 legacy_installer = root / 'deploy-3xui-dual.sh'
 version = re.search(r"^SCRIPT_VERSION = '([^']+)'", source.read_text(), re.M).group(1)
-if 'relay ' + version + ' / 3X-UI' not in (root / 'scripts/launcher.sh').read_text():
+if '3xui-relay v' + version + ' / 3X-UI' not in (root / 'scripts/launcher.sh').read_text():
     raise SystemExit('Launcher version differs from Python source')
 content = (root / 'scripts/launcher.sh').read_text() + source.read_text().rstrip() + '\n\nPYTHON_3XUI_DUAL_EOF\npython3 "$script_tmp" "$@"\n'
 if args.check:

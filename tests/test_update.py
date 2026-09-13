@@ -24,7 +24,7 @@ class UpdateTests(unittest.TestCase):
                         self.assertIn('/'+sha+'/',url);out=source
                     return subprocess.CompletedProcess(args,0,out,'')
                 if fail_install and args[1]==manager: raise RuntimeError('startup failed')
-                return subprocess.CompletedProcess(args,0,'relay 1.1.2 / 3X-UI v3.7.0\n','')
+                return subprocess.CompletedProcess(args,0,'3xui-relay v1.1.2 / 3X-UI v3.7.0\n','')
             with patch.object(m,'ROOT',root), patch.object(m,'run',side_effect=run), patch.object(m,'ensure_no_pending'):
                 if corrupt or fail_install:
                     with self.assertRaises(RuntimeError): m.update_manager()

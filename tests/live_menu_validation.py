@@ -8,11 +8,11 @@ import select
 import signal
 import time
 
-paths = [Path('/root/3xui-dual/manager.py'), Path('/usr/local/bin/relay')]
+paths = [Path('/root/3xui-dual/manager.py'), Path('/usr/local/bin/3xui-relay')]
 before = [p.stat().st_mtime_ns for p in paths]
 pid, fd = pty.fork()
 if pid == 0:
-    os.execv('/usr/local/bin/relay', ['relay'])
+    os.execv('/usr/local/bin/3xui-relay', ['3xui-relay'])
 output = b''
 reaped = False
 try:

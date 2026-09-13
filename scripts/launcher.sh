@@ -3,7 +3,7 @@
 set -euo pipefail
 umask 077
 if [[ "${1:-}" == "--version" ]]; then
-  echo 'relay 1.1.2 / 3X-UI v3.7.0'
+  echo '3xui-relay v1.1.2 / 3X-UI v3.7.0'
   exit 0
 fi
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then

@@ -47,10 +47,12 @@ else
     echo "部署目录有无法确认归属的文件，已保留：$root"; exit 1
   fi
 fi
-# Remove only the command owned by this installer; preserve unrelated relay programs.
-if [[ -f /usr/local/bin/relay && ! -L /usr/local/bin/relay ]] && grep -Fxq '# Managed by 3xui-residential-relay' /usr/local/bin/relay; then
-  rm -f -- /usr/local/bin/relay
-fi
+# Remove only wrappers owned by this installer, including the legacy command.
+for command in /usr/local/bin/3xui-relay /usr/local/bin/relay; do
+  if [[ -f "$command" && ! -L "$command" ]] && grep -Fxq '# Managed by 3xui-residential-relay' "$command"; then
+    rm -f -- "$command"
+  fi
+done
 # Exact installer names and installer-owned temporary Python files only.
 rm -f -- /root/deploy-3xui-dual.sh /root/3xui-residential-relay.sh
 find /tmp -maxdepth 1 -type f -user root -name '3xui-dual.????????.py' -delete

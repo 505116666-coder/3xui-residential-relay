@@ -45,3 +45,21 @@ class ShortcutTests(unittest.TestCase):
                 self.assertTrue(m.install_shortcut())
                 say.assert_not_called()
             self.assertEqual(command.stat().st_mtime_ns,before)
+
+    def test_migration_removes_only_exact_legacy_wrapper(self):
+        for legacy_text in (m.SHORTCUT_TEXT, 'unrelated program'):
+            with tempfile.TemporaryDirectory() as td:
+                root=Path(td);command=root/'3xui-relay';legacy=root/'relay'
+                legacy.write_text(legacy_text)
+                with patch.object(m,'SHORTCUT',command), patch.object(m,'LEGACY_SHORTCUT',legacy):
+                    self.assertTrue(m.install_shortcut())
+                self.assertTrue(command.exists())
+                self.assertEqual(legacy.exists(),legacy_text!=m.SHORTCUT_TEXT)
+
+    def test_conflict_preserves_legacy_command(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td);command=root/'3xui-relay';legacy=root/'relay'
+            command.write_text('other program');legacy.write_text(m.SHORTCUT_TEXT)
+            with patch.object(m,'SHORTCUT',command), patch.object(m,'LEGACY_SHORTCUT',legacy):
+                self.assertFalse(m.install_shortcut())
+            self.assertEqual(legacy.read_text(),m.SHORTCUT_TEXT)

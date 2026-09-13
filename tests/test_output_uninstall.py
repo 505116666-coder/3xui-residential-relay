@@ -65,6 +65,16 @@ class OutputTests(unittest.TestCase):
         encoded=out.getvalue().split('\033]52;c;',1)[1].split('\a',1)[0]
         self.assertEqual(base64.b64decode(encoded).decode(),m.copy_values(s)[2][1])
 
+    def test_sectioned_results_preserve_exact_copyable_links(self):
+        s=state()
+        output=m.credentials(s)
+        links=[line for line in output.splitlines() if line.startswith('vless://')]
+        self.assertEqual(links,[m.node_link(s,n) for n in s['nodes']])
+        self.assertIn('  面板登录信息\n\n',output)
+        self.assertIn('  使用提示\n\n',output)
+        self.assertIn('v1.1.2',output)
+        self.assertIn('3xui-relay',output)
+
 
 class UninstallTests(unittest.TestCase):
     def setUp(self):
@@ -126,7 +136,7 @@ class UninstallTests(unittest.TestCase):
         self.assertEqual(log.read_text().strip(),'--force delete allow 23456/tcp')
 
     def test_owned_shortcut_removed_and_unrelated_preserved(self):
-        command=self.base/'usr/local/bin/relay';command.parent.mkdir(parents=True,exist_ok=True)
+        command=self.base/'usr/local/bin/3xui-relay';command.parent.mkdir(parents=True,exist_ok=True)
         command.write_text('#!/bin/sh\n# Managed by 3xui-residential-relay\n')
         self.assertEqual(self.run_script().returncode,0)
         self.assertFalse(command.exists())

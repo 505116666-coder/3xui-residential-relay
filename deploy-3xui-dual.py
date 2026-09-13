@@ -36,7 +36,8 @@ DIGESTS = {
     'arm64': '3caf1db1e8b10bb1fa1324c945522690bcf01c533ee75b377268f1c01a3ce896',
 }
 ROOT = Path('/root/3xui-dual')
-SHORTCUT = Path('/usr/local/bin/relay')
+SHORTCUT = Path('/usr/local/bin/3xui-relay')
+LEGACY_SHORTCUT = Path('/usr/local/bin/relay')
 SHORTCUT_MARKER = '# Managed by 3xui-residential-relay'
 SHORTCUT_TEXT = '#!/bin/sh\n' + SHORTCUT_MARKER + '\nif [ "$#" -eq 0 ]; then set -- --menu; fi\nexec python3 /root/3xui-dual/manager.py "$@"\n'
 APP = Path('/usr/local/x-ui')
@@ -67,13 +68,18 @@ def save(path, value):
 def install_shortcut():
     if SHORTCUT.is_symlink() or (SHORTCUT.exists() and
             (not SHORTCUT.is_file() or SHORTCUT_MARKER not in SHORTCUT.read_text(errors='replace').splitlines())):
-        say('relay 命令已被其他程序占用，保留原命令；可用 bash /root/3xui-residential-relay.sh --menu。')
+        say('3xui-relay 命令已被其他程序占用，保留原命令；可用 bash /root/3xui-residential-relay.sh --menu。')
         return False
-    if SHORTCUT.exists() and SHORTCUT.read_text() == SHORTCUT_TEXT and SHORTCUT.stat().st_mode & 0o777 == 0o700:
-        return True
-    save(SHORTCUT, SHORTCUT_TEXT)
-    SHORTCUT.chmod(0o700)
-    say('下次输入 relay 即可打开管理菜单。')
+    changed = not (SHORTCUT.exists() and SHORTCUT.read_text() == SHORTCUT_TEXT
+                   and SHORTCUT.stat().st_mode & 0o777 == 0o700)
+    if changed:
+        save(SHORTCUT, SHORTCUT_TEXT)
+        SHORTCUT.chmod(0o700)
+    # Only retire the exact wrapper created by this project; preserve unrelated commands.
+    if not LEGACY_SHORTCUT.is_symlink() and LEGACY_SHORTCUT.is_file() and LEGACY_SHORTCUT.read_text(errors='replace') == SHORTCUT_TEXT:
+        LEGACY_SHORTCUT.unlink()
+    if changed:
+        say('下次输入 3xui-relay 即可打开管理菜单。')
     return True
 
 
@@ -122,7 +128,7 @@ def update_manager():
         candidate = Path(td) / 'manager.py'
         save(candidate, source)
         version = run([sys.executable, candidate, '--version'], timeout=15).stdout.strip()
-        if not re.fullmatch(r'relay [0-9]+\.[0-9]+\.[0-9]+ / 3X-UI v[0-9.]+', version):
+        if not re.fullmatch(r'3xui-relay v[0-9]+\.[0-9]+\.[0-9]+ / 3X-UI v[0-9.]+', version):
             raise RuntimeError('新版启动检查失败，已保留旧版。')
     save(ROOT / 'manager.previous.py', old)
     try:
@@ -131,7 +137,7 @@ def update_manager():
     except BaseException:
         save(manager, old)
         raise
-    say('已更新至 ' + version + '；重新输入 relay 使用新版。旧版备份：' + str(ROOT / 'manager.previous.py'))
+    say('已更新至 ' + version + '；重新输入 3xui-relay 使用新版。旧版备份：' + str(ROOT / 'manager.previous.py'))
 
 
 def run(args, *, input=None, timeout=180, check=True, cwd=None):
@@ -654,14 +660,26 @@ def node_link(s, n):
     return f"vless://{n['uuid']}@{s['ip']}:{n['port']}?{query}#{urllib.parse.quote(n['name'])}"
 
 
+def result_divider():
+    return '─' * max(1, min(64, shutil.get_terminal_size(fallback=(80, 24)).columns - 1))
+
+
 def credentials(s):
-    lines = ['3X-UI 一键中转住宅 IP · Didushan', f'面板版本：{VERSION}', f"面板：https://{s['ip']}:{s['panel_port']}{s['base']}",
-             f"用户名：{s['username']}", f"密码：{s['password']}", '',
-             '以下链接包含节点凭据，请勿公开：']
+    divider = result_divider()
+    lines = ['', divider, f'  3X-UI 一键中转住宅 IP · v{SCRIPT_VERSION}', divider, '',
+             '  面板登录信息', '', f'  面板版本：{VERSION}',
+             f"  面板：https://{s['ip']}:{s['panel_port']}{s['base']}",
+             f"  用户名：{s['username']}", f"  密码：{s['password']}", '',
+             '  以下信息包含登录及节点凭据，请勿公开。']
     for n in s['nodes'] + [entry['node'] for entry in s.get('additional_residential', [])]:
-        lines += ['', n['name'], node_link(s, n)]
-    lines += ['', '复制节点链接后，导入客户端，分别测试服务器和住宅出口。',
-              '住宅代理不通时不会自动换成服务器 IP；UDP 能否使用取决于代理商和网络。']
+        lines += ['', divider, f"  {n['name']}", divider, '',
+                  f"  节点名称：{n['name']}", f"  节点端口：{n['port']}", '',
+                  '  节点链接 · 复制下方完整链接，导入客户端', '', node_link(s, n)]
+    lines += ['', divider, '  使用提示', '',
+              '  1. 复制节点链接后导入客户端，分别测试服务器和住宅出口。',
+              '  2. 在云安全组或其他防火墙放行节点的 TCP 端口。',
+              '  3. 住宅代理不通时不会自动换成服务器 IP；UDP 能否使用取决于代理商和网络。',
+              '  4. 输入 3xui-relay 打开管理菜单。', '', divider, '']
     return '\n'.join(lines) + '\n'
 
 
@@ -1228,7 +1246,7 @@ def apply_residential_add(s, node, proxy, original, api):
 
 
 def show_added_result(s, node, exit_ip, udp_ok):
-    divider = '─' * max(1, min(64, shutil.get_terminal_size(fallback=(80, 24)).columns - 1))
+    divider = result_divider()
     say('\n' + divider)
     say('  住宅 IP 添加成功')
     say(divider + '\n')
@@ -1628,7 +1646,7 @@ def manage_residential(s, operation):
 
 def menu(s):
     while True:
-        say(f'\n3X-UI 住宅中转管理 · 脚本 {SCRIPT_VERSION}')
+        say(f'\n3X-UI 住宅中转管理 · v{SCRIPT_VERSION}')
         say('1. 查看节点与登录信息\n2. 添加住宅 IP\n3. 检查全部节点\n4. 替换住宅代理\n5. 重命名住宅节点\n6. 删除追加住宅节点\n7. 脱敏诊断\n8. 恢复中断操作\n9. 更新管理脚本\n0. 退出')
         choice = ask('选择操作', '0')
         if choice == '0':
@@ -1660,7 +1678,7 @@ def menu(s):
 
 def main():
     parser = argparse.ArgumentParser(description='3X-UI 一键中转住宅 IP')
-    parser.add_argument('--version', action='version', version='relay ' + SCRIPT_VERSION + ' / 3X-UI ' + VERSION)
+    parser.add_argument('--version', action='version', version='3xui-relay v' + SCRIPT_VERSION + ' / 3X-UI ' + VERSION)
     for flag in ('menu', 'edit-residential', 'rename-residential', 'delete-residential', 'rollback-change', 'diagnostics', 'update'):
         parser.add_argument('--' + flag, action='store_true')
     parser.add_argument('--resume', action='store_true', help='仅恢复本脚本未完成的部署；重新应用其配置')
