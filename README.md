@@ -39,6 +39,11 @@
 
 准备支持 **VLESS + REALITY + XTLS Vision** 的客户端，用于导入和测试节点，例如 v2rayN、v2rayNG。建议更新客户端及其内核。
 
+- **v2rayN**：[GitHub 最新版下载](https://github.com/2dust/v2rayN/releases/latest)。
+- **v2rayNG**：[GitHub 最新版下载](https://github.com/2dust/v2rayNG/releases/latest)。
+
+打开后，在页面的 **Assets** 中选择适合设备的安装包。
+
 > 准备好服务器和住宅代理信息后，复制安装命令，按提示填写即可。脚本会自动安装面板、配置中转，并输出面板登录信息和两条节点链接。
 
 ## 二、一键安装
