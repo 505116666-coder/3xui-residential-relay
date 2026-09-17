@@ -285,7 +285,12 @@ def extract(archive, dest):
             target = (dest / m.name).resolve()
             if not str(target).startswith(str(dest.resolve()) + '/') or not (m.isfile() or m.isdir()):
                 raise RuntimeError('发行包含不允许的路径或链接，停止解压。')
-        tf.extractall(dest)
+        # Explicit policy avoids the Python 3.12/3.13 default-change warning.
+        # Older distribution builds without filters still use the checks above.
+        if hasattr(tarfile, 'data_filter'):
+            tf.extractall(dest, filter='data')
+        else:
+            tf.extractall(dest)
 
 
 def curl_quote(value):
