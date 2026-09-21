@@ -54,7 +54,16 @@
 curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main/3xui-residential-relay.sh' -o /root/3xui-residential-relay.sh && bash /root/3xui-residential-relay.sh
 ```
 
-## 三、原理阐述
+## 三、教程
+
+- **YouTube 视频教程**：[点击观看完整教程](https://youtu.be/F8FC--dJUZM?si=-Jg-nOCCaRiNOkjA)。
+
+教程中演示的住宅 IP 和服务器品牌：
+
+- **IPFLY 住宅 IP 注册链接**：[点击注册 IPFLY](https://www.ipfly.net/zh-cn/activity/didushan/)。
+- **VMRack 服务器注册链接**：[点击注册 VMRack](https://www.vmrack.net?ref_code=5jtdMEQ8nTZ)。
+
+## 四、原理阐述
 
 ![服务器直连与住宅中转的流量路径对比](docs/images/residential-relay-principle.png)
 
@@ -67,7 +76,7 @@ curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main
 
 你只需要填写住宅代理信息，脚本会自动完成节点创建和路由绑定，并给出可导入客户端的链接。住宅 IP 由你的代理商提供，脚本负责配置中转。
 
-## 四、装好后得到什么
+## 五、装好后得到什么
 
 - **面板登录信息**：打开输出的完整 HTTPS 地址，用给出的用户名和密码登录。
 - **服务器直连节点**：上网时使用你的服务器 IP。
@@ -76,7 +85,7 @@ curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main
 两条节点链接复制后，分别导入客户端测试。服务器上的自检通过后，仍要用自己的电脑或手机确认能连接。
 
 
-## 五、日常管理（v1.1.2）
+## 六、日常管理（v1.1.2）
 
 安装完成后，在服务器 SSH 中输入以下命令打开管理菜单：
 
@@ -119,7 +128,7 @@ curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main
 
 更新与异常恢复详见[维护与排查](docs/维护说明.md)，验证范围详见[开发与测试](docs/开发与测试.md)。
 
-## 六、一键卸载
+## 七、一键卸载
 
 安装中途失败，或者装好了不想用，都可以运行下面的命令。**会删除本脚本安装的面板、节点、账号、证书及部署资料，原链接随即失效。** 卸载后可以重新安装。
 
@@ -127,7 +136,7 @@ curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main
 curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main/uninstall-3xui-relay.sh' -o /root/uninstall-3xui-relay.sh && bash /root/uninstall-3xui-relay.sh
 ```
 
-## 七、需要注意
+## 八、需要注意
 
 - 安装的是 **3X-UI v3.7.0**。提示 REALITY 目标域名时，可先回车使用默认值；不需要你拥有这个域名。
 - 住宅代理只支持 TCP 时，TCP 可以正常用；支持 UDP 且网络畅通时，UDP 也走住宅代理。住宅代理故障时，这个节点不会自动改用服务器 IP。
