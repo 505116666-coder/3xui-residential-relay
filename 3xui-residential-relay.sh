@@ -935,10 +935,10 @@ def banner():
     color = sys.stdout.isatty() and os.environ.get('TERM') != 'dumb'
     colors = (33, 39, 45, 51, 45, 39, 33)
     say('')
-    if width >= 63:
-        words = ('QIANYUDASHI',)
-    elif width >= 35:
-        words = ('QIANYU', 'DASHI')
+    if width >= 47:
+        words = ('DASHI',)
+    elif width >= 23:
+        words = ('DASHI',)
     else:
         words = ()
         say('qianyudashi'[:width])
