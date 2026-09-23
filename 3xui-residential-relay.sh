@@ -117,6 +117,7 @@ def install_shortcut():
     return True
 
 
+
 LOCK_PATH = Path('/run/lock/3xui-dual.lock')
 
 
@@ -139,11 +140,11 @@ class ProbeError(RuntimeError):
 
 def update_manager():
     ensure_no_pending()
-    base = 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/'
+    base = 'https://raw.githubusercontent.com/505116666-coder/3xui-residential-relay/'
     def download(url):
         return run(['curl', '--noproxy', '*', '-fLsS', '--proto', '=https',
                     '--proto-redir', '=https', '--connect-timeout', '10', '--max-time', '60', url], timeout=70).stdout
-    commit = json.loads(download('https://api.github.com/repos/Didushan/3xui-residential-relay/commits/main'))['sha']
+    commit = json.loads(download('https://api.github.com/repos/505116666-coder/3xui-residential-relay/commits/main'))['sha']
     if not re.fullmatch('[0-9a-f]{40}', commit):
         raise RuntimeError('更新版本标识无效。')
     sums = download(base + commit + '/SHA256SUMS')
@@ -814,7 +815,7 @@ def deploy(s):
             recorded = manifest.read_text() if manifest.exists() else ''
             if str(p) not in recorded.splitlines():
                 save(manifest, recorded + str(p) + '\n')
-            run(['ufw', 'allow', str(p) + '/tcp', 'comment', 'Didushan-3xui-relay'])
+            run(['ufw', 'allow', str(p) + '/tcp', 'comment', '505116666-coder-3xui-relay'])
     archive = ROOT / ('x-ui-linux-' + s['arch'] + '.tar.gz')
     say(f'安装固定版本 {VERSION}，验证官方发行包 SHA-256……')
     download(f'https://github.com/MHSanaei/3x-ui/releases/download/{VERSION}/{archive.name}',
@@ -933,12 +934,12 @@ def banner():
     colors = (33, 39, 45, 51, 45, 39, 33)
     say('')
     if width >= 47:
-        words = ('DIDUSHAN',)
+        words = ('505116666-coder',)
     elif width >= 23:
         words = ('DIDU', 'SHAN')
     else:
         words = ()
-        say('Didushan'[:width])
+        say('505116666-coder'[:width])
     for word in words:
         for row in range(7):
             pixels = '0'.join(BANNER_FONT[letter][row] for letter in word)
@@ -958,7 +959,7 @@ def banner():
 
 
 def completion(s):
-    say(terminal_link('作者 YouTube 频道', 'https://www.youtube.com/@Didushan') + '  |  ' + terminal_link('电报联系', 'https://t.me/didushan9'))
+    say(terminal_link('作者 YouTube 频道', 'https://www.youtube.com/@505116666-coder') + '  |  ' + terminal_link('电报联系', 'https://t.me/505116666-coder9'))
 
 
 def copy_values(s):
@@ -1208,7 +1209,7 @@ def rollback_add(s):
     if record.get('ufw_added'):
         p = record['node']['port']
         status = run(['ufw', 'status'], check=False).stdout
-        if re.search(r'^' + str(p) + r'/tcp\s+.*# Didushan-3xui-relay\s*$', status, re.M):
+        if re.search(r'^' + str(p) + r'/tcp\s+.*# 505116666-coder-3xui-relay\s*$', status, re.M):
             run(['ufw', '--force', 'delete', 'allow', str(p) + '/tcp'])
         manifest = ROOT / 'ufw-added.txt'
         if manifest.exists():
@@ -1268,7 +1269,7 @@ def apply_residential_add(s, node, proxy, original, api):
                 recorded = manifest.read_text() if manifest.exists() else ''
                 if str(node['port']) not in recorded.splitlines():
                     save(manifest, recorded + str(node['port']) + '\n')
-                run(['ufw', 'allow', str(node['port']) + '/tcp', 'comment', 'Didushan-3xui-relay'])
+                run(['ufw', 'allow', str(node['port']) + '/tcp', 'comment', '505116666-coder-3xui-relay'])
         updated = copy.deepcopy(s)
         updated.setdefault('additional_residential', []).append({
             'node': node, 'proxy': proxy, 'exit_ip': exit_ip, 'udp_test_passed': udp_ok})
