@@ -924,6 +924,8 @@ BANNER_FONT = {
     'H': ('10001', '10001', '10001', '11111', '10001', '10001', '10001'),
     'A': ('01110', '10001', '10001', '11111', '10001', '10001', '10001'),
     'N': ('10001', '11001', '11001', '10101', '10011', '10011', '10001'),
+    'Q': ('01110', '10001', '10001', '10001', '10101', '10010', '01101'),
+    'Y': ('10001', '10001', '01010', '00100', '00100', '00100', '00100'),
 }
 
 
@@ -933,13 +935,13 @@ def banner():
     color = sys.stdout.isatty() and os.environ.get('TERM') != 'dumb'
     colors = (33, 39, 45, 51, 45, 39, 33)
     say('')
-    if width >= 47:
-        words = ('505116666-coder',)
-    elif width >= 23:
-        words = ('DIDU', 'SHAN')
+        if width >= 63:
+        words = ('QIANYUDASHI',)
+    elif width >= 35:
+        words = ('QIANYU', 'DASHI')
     else:
         words = ()
-        say('505116666-coder'[:width])
+        say('qianyudashi'[:width])
     for word in words:
         for row in range(7):
             pixels = '0'.join(BANNER_FONT[letter][row] for letter in word)
