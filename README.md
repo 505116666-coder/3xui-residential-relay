@@ -51,7 +51,7 @@
 在**服务器的 SSH 终端**粘贴运行，按提示填写即可：
 
 ```bash
-curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main/3xui-residential-relay.sh' -o /root/3xui-residential-relay.sh && bash /root/3xui-residential-relay.sh
+curl -fL 'https://raw.githubusercontent.com/505116666-coder/3xui-residential-relay/main/3xui-residential-relay.sh' -o /root/3xui-residential-relay.sh && bash /root/3xui-residential-relay.sh
 ```
 
 ## 三、教程
@@ -60,7 +60,7 @@ curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main
 
 教程中演示的住宅 IP 和服务器品牌：
 
-- **IPFLY 住宅 IP 注册链接**：[点击注册 IPFLY](https://www.ipfly.net/zh-cn/activity/didushan/)。
+- **IPFLY 住宅 IP 注册链接**：[点击注册 IPFLY](https://www.ipfly.net/zh-cn/activity/505116666-coder/)。
 - **VMRack 服务器注册链接**：[点击注册 VMRack](https://www.vmrack.net?ref_code=5jtdMEQ8nTZ)。
 
 ## 四、原理阐述
@@ -133,7 +133,7 @@ curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main
 安装中途失败，或者装好了不想用，都可以运行下面的命令。**会删除本脚本安装的面板、节点、账号、证书及部署资料，原链接随即失效。** 卸载后可以重新安装。
 
 ```bash
-curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main/uninstall-3xui-relay.sh' -o /root/uninstall-3xui-relay.sh && bash /root/uninstall-3xui-relay.sh
+curl -fL 'https://raw.githubusercontent.com/505116666-coder/3xui-residential-relay/main/uninstall-3xui-relay.sh' -o /root/uninstall-3xui-relay.sh && bash /root/uninstall-3xui-relay.sh
 ```
 
 ## 八、需要注意
@@ -145,4 +145,4 @@ curl -fL 'https://raw.githubusercontent.com/Didushan/3xui-residential-relay/main
 
 安装失败、旧版本更新、查看日志，请看[维护与排查](docs/维护说明.md)。
 
-作者 **Didushan** · [YouTube 频道](https://www.youtube.com/@Didushan) · [电报联系](https://t.me/didushan9)
+作者 **505116666-coder** · [YouTube 频道](https://www.youtube.com/@505116666-coder) · [电报联系](https://t.me/505116666-coder9)
